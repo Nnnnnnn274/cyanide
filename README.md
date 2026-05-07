@@ -1,12 +1,14 @@
 # kfun-zeroxjf
 
-This fork first fixes exploit stability on A18 devices, including the iPhone 16 series.
-The A18 path now follows the working Lara-style race flow more closely: marker-initialized
-target file contents, stable local remap addresses, nonfatal missed-race handling, and
-longer zone-trimming retries.
+This fork focuses on exploit stability across supported devices. Shared chain cleanup,
+process-marker matching, socket validation, and nonfatal missed-race handling run before
+or during every exploit attempt. The A18/M4 `pe_v2` path also has extra path-specific
+guardrails for its wired-page/zone-trimming flow: marker-initialized target file
+contents, stable local remap addresses, bounded page freeing, socket-spray preflight
+checks, and controlled zone-trimming retries.
 
 Credit to rooootdev's [Lara](https://github.com/rooootdev/lara) for the working
-kexploit behavior used to stabilize this fork's A18 path.
+kexploit behavior used to stabilize this fork.
 
 Fork of `wh1te4ever/darksword-kexploit-fun` for iOS security research.
 
