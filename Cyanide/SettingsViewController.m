@@ -128,12 +128,14 @@ static volatile int g_axonlite_live_running = 0;
 static volatile int g_axonlite_live_stop_requested = 0;
 static volatile int g_app_in_background = 0;
 static volatile int g_screen_awake = 1;
+static volatile int g_screen_locked = 0;
 static volatile int g_settings_termination_cleanup_started = 0;
 static volatile int g_settings_cleanup_running = 0;
 static volatile uint64_t g_sbc_live_apply_generation = 0;
 static UIBackgroundTaskIdentifier g_statbar_bg_task = (UIBackgroundTaskIdentifier)-1;
 static int g_springboard_blanked_notify_token = NOTIFY_TOKEN_INVALID;
 static int g_display_status_notify_token = NOTIFY_TOKEN_INVALID;
+static int g_springboard_lockstate_notify_token = NOTIFY_TOKEN_INVALID;
 static int g_springboard_finished_startup_notify_token = NOTIFY_TOKEN_INVALID;
 static const NSInteger kSBCDefaultDockIcons = 4;
 static const NSInteger kSBCDefaultCols = 4;
@@ -146,8 +148,8 @@ static const int64_t kLiveBackgroundTaskGraceSeconds = 10;
 static const useconds_t kRSSILiveIntervalUS = 1000000;
 static const useconds_t kRSSILiveBackgroundIntervalUS = 1000000;
 static const NSUInteger kRSSILiveMaxTicks = 43200;
-static const useconds_t kAxonLiteLiveIntervalUS = 1200000;
-static const useconds_t kAxonLiteLiveBackgroundIntervalUS = 1200000;
+static const useconds_t kAxonLiteLiveIntervalUS = 5000000;
+static const useconds_t kAxonLiteLiveBackgroundIntervalUS = 15000000;
 static const NSUInteger kAxonLiteLiveMaxTicks = 43200;
 static NSString * const kSettingsRemoteCallStateDidChangeNotification = @"SettingsRemoteCallStateDidChangeNotification";
 NSString * const kSettingsActionsDidCompleteNotification = @"SettingsActionsDidCompleteNotification";
@@ -292,7 +294,7 @@ static BOOL settings_app_state_is_foreground(void)
 
 static NSUInteger settings_live_failure_limit(NSUInteger foregroundLimit)
 {
-    return (g_app_in_background != 0 || g_screen_awake == 0) ? 1 : foregroundLimit;
+    return (g_app_in_background != 0 || g_screen_awake == 0 || g_screen_locked != 0) ? 1 : foregroundLimit;
 }
 
 static BOOL settings_rssi_install_allowed(void)
@@ -346,6 +348,51 @@ static BOOL settings_statbar_screen_awake(void)
 {
     (void)settings_refresh_screen_awake_state(NULL);
     return settings_screen_awake_cached();
+}
+
+static BOOL settings_read_screen_locked(void)
+{
+    if (g_springboard_lockstate_notify_token == NOTIFY_TOKEN_INVALID) return NO;
+
+    uint64_t state = 0;
+    if (notify_get_state(g_springboard_lockstate_notify_token, &state) != NOTIFY_STATUS_OK) {
+        return NO;
+    }
+
+    return state != 0;
+}
+
+static BOOL settings_screen_locked_cached(void)
+{
+    return g_screen_locked != 0;
+}
+
+static BOOL settings_refresh_screen_lock_state(const char *reason)
+{
+    BOOL locked = settings_read_screen_locked();
+    int newValue = locked ? 1 : 0;
+    int old = __sync_lock_test_and_set(&g_screen_locked, newValue);
+    if (old != newValue) {
+        printf("[SETTINGS] lock state=%s%s%s\n",
+               locked ? "locked" : "unlocked",
+               reason ? " via " : "",
+               reason ?: "");
+    }
+    return old != newValue;
+}
+
+static BOOL settings_axonlite_can_poll_springboard(void)
+{
+    (void)settings_refresh_screen_awake_state(NULL);
+    (void)settings_refresh_screen_lock_state(NULL);
+    return settings_screen_awake_cached() && !settings_screen_locked_cached();
+}
+
+static const char *settings_axonlite_pause_reason(void)
+{
+    if (!settings_screen_awake_cached()) return "screen asleep";
+    if (settings_screen_locked_cached()) return "screen locked";
+    return "screen unavailable";
 }
 
 static void settings_handle_springboard_restart(void)
@@ -408,6 +455,16 @@ static void settings_install_screen_awake_observers(void)
             g_display_status_notify_token = NOTIFY_TOKEN_INVALID;
         }
 
+        status = notify_register_dispatch("com.apple.springboard.lockstate",
+                                          &g_springboard_lockstate_notify_token,
+                                          dispatch_get_main_queue(), ^(int token) {
+            (void)token;
+            (void)settings_refresh_screen_lock_state("springboard.lockstate");
+        });
+        if (status != NOTIFY_STATUS_OK) {
+            g_springboard_lockstate_notify_token = NOTIFY_TOKEN_INVALID;
+        }
+
         // Darwin notify fires when SpringBoard finishes its boot/respawn.
         // Either we just launched and SB is fine (cleanup is a no-op against
         // already-zero state) or SB crashed under us and we MUST drop every
@@ -435,6 +492,7 @@ static void settings_install_screen_awake_observers(void)
         }];
 
         (void)settings_refresh_screen_awake_state("startup");
+        (void)settings_refresh_screen_lock_state("startup");
     });
 }
 
@@ -1393,7 +1451,7 @@ static void settings_start_axonlite_live_loop(void)
         NSUInteger tick = 0;
         NSUInteger failures = 0;
         uint64_t nextTickUS = settings_now_us();
-        BOOL pausedForSleep = NO;
+        BOOL pausedForUnavailableScreen = NO;
 
         printf("[SETTINGS] Axon Lite live loop started interval=%uus background=%uus max=%lu\n",
                kAxonLiteLiveIntervalUS,
@@ -1407,15 +1465,15 @@ static void settings_start_axonlite_live_loop(void)
                    tick < kAxonLiteLiveMaxTicks) {
                 useconds_t intervalUS = settings_live_interval(kAxonLiteLiveIntervalUS,
                                                                kAxonLiteLiveBackgroundIntervalUS);
-                // While the screen is blank, SB tears down cover-sheet view
-                // controllers to free memory. Calling into our cached
-                // gAxonCLVC etc during that window risks dereferencing freed
-                // objects (the PAC-fault path we keep hitting). Pause until
-                // the screen wakes; on wake the loop re-finds CLVC fresh.
-                if (!settings_statbar_screen_awake()) {
-                    if (!pausedForSleep) {
-                        pausedForSleep = YES;
-                        printf("[SETTINGS] Axon Lite paused while screen is asleep\n");
+                // While locked/asleep, CoverSheet churn is exactly where Axon
+                // can put sustained pressure on SB. Sleep locally and do not
+                // issue RemoteCall traffic until the user is unlocked again.
+                if (!settings_axonlite_can_poll_springboard()) {
+                    if (!pausedForUnavailableScreen) {
+                        pausedForUnavailableScreen = YES;
+                        printf("[SETTINGS] Axon Lite paused while %s\n",
+                               settings_axonlite_pause_reason());
+                        axonlite_forget_remote_state();
                     }
                     settings_live_loop_sleep_interruptible(0,
                                                            intervalUS,
@@ -1423,12 +1481,9 @@ static void settings_start_axonlite_live_loop(void)
                     nextTickUS = settings_now_us();
                     continue;
                 }
-                if (pausedForSleep) {
-                    pausedForSleep = NO;
-                    printf("[SETTINGS] Axon Lite resumed after screen wake\n");
-                    // SB likely rebuilt the cover sheet during the blank
-                    // window; the cached CLVC we held is stale. Drop it so
-                    // the next tick walks the windows again.
+                if (pausedForUnavailableScreen) {
+                    pausedForUnavailableScreen = NO;
+                    printf("[SETTINGS] Axon Lite resumed after screen unlock/wake\n");
                     axonlite_forget_remote_state();
                 }
 
@@ -1505,6 +1560,13 @@ static void settings_apply_axonlite_once_async(const char *reason)
     dispatch_async(dispatch_get_global_queue(0, 0), ^{
         if (settings_cleanup_in_progress()) return;
         bool ok = false;
+        if (!settings_axonlite_can_poll_springboard()) {
+            printf("[SETTINGS] Axon Lite lifecycle apply%s%s skipped: %s\n",
+                   reason ? ": " : "", reason ?: "",
+                   settings_axonlite_pause_reason());
+            settings_start_axonlite_live_loop();
+            return;
+        }
         @synchronized (settings_rc_lock()) {
             if (settings_cleanup_in_progress() ||
                 ![d boolForKey:kSettingsAxonLiteEnabled] ||
@@ -1637,6 +1699,13 @@ static void settings_schedule_live_apply_for_key(NSString *key)
     if (settings_key_is_axonlite(key)) {
         if ([d boolForKey:kSettingsAxonLiteEnabled] && g_springboard_rc_ready) {
             dispatch_async(dispatch_get_global_queue(0, 0), ^{
+                if (!settings_axonlite_can_poll_springboard()) {
+                    printf("[SETTINGS] live Axon Lite apply skipped: %s\n",
+                           settings_axonlite_pause_reason());
+                    settings_start_axonlite_live_loop();
+                    settings_notify_package_queue_changed_async();
+                    return;
+                }
                 @synchronized (settings_rc_lock()) {
                     if (settings_cleanup_in_progress() || !g_springboard_rc_ready) return;
                     bool ok = axonlite_apply_in_session();
@@ -1890,7 +1959,7 @@ void settings_run_actions(void)
                          [d boolForKey:kSettingsRSSIDisplayCell] ? "on" : "off");
             }
             if (runAxonLite) {
-                log_user("[PLAN] Axon Lite target: segmented notification hub refresh=1.2s\n");
+                log_user("[PLAN] Axon Lite target: segmented notification hub refresh=5s\n");
             }
             if (runPowercuff) {
                 NSString *lvl = [d stringForKey:kSettingsPowercuffLevel] ?: @"heavy";
@@ -1933,8 +2002,9 @@ void settings_run_actions(void)
                 settings_progress(&step, total, "Applying Powercuff via thermalmonitord");
                 @synchronized (settings_rc_lock()) {
                     if (g_springboard_rc_ready) {
-                        axonlite_stop_in_session();
-                        rssidisplay_stop_in_session();
+                        settings_request_all_live_loops_stop("Powercuff process switch");
+                        axonlite_forget_remote_state();
+                        rssidisplay_forget_remote_state();
                     }
                     settings_destroy_springboard_remote_call_locked("switching to thermalmonitord");
                     NSString *lvl = [d stringForKey:kSettingsPowercuffLevel] ?: @"heavy";
@@ -2028,16 +2098,12 @@ void settings_run_actions(void)
 
                     if (runAxonLite) {
                         settings_progress(&step, total, "Starting Axon Lite notification hub");
-                        // First call: force the cover-sheet chain to
-                        // materialize and bind data sources.
-                        // Subsequent calls: let the now-populated CLVC
-                        // settle through the model → cache → bundles
-                        // pipeline before the user opens the lock screen.
                         bool ok = false;
-                        for (int i = 0; i < 3; i++) {
-                            bool tickOK = axonlite_apply_in_session();
-                            if (tickOK) ok = true;
-                            if (i + 1 < 3) usleep(250000);
+                        if (settings_axonlite_can_poll_springboard()) {
+                            ok = axonlite_apply_in_session();
+                        } else {
+                            printf("[SETTINGS] Axon Lite initial apply skipped: %s\n",
+                                   settings_axonlite_pause_reason());
                         }
                         settings_mark_tweak_applied(kSettingsAxonLiteEnabled,
                                                     ok && [d boolForKey:kSettingsAxonLiteEnabled]);
