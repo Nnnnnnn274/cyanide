@@ -49,7 +49,7 @@
 
     self.statusLabel = [[UILabel alloc] init];
     self.statusLabel.translatesAutoresizingMaskIntoConstraints = NO;
-    self.statusLabel.text = @"Running — close any time, this keeps going in the background.";
+    self.statusLabel.text = @"Exploit running — recommended to wait here until complete.";
     self.statusLabel.font = [UIFont systemFontOfSize:13.0];
     self.statusLabel.textColor = [UIColor.whiteColor colorWithAlphaComponent:0.72];
     self.statusLabel.numberOfLines = 1;

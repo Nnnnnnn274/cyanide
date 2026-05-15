@@ -10,7 +10,8 @@
 
 
 typedef NS_ENUM(NSInteger, PackageDetailSection) {
-    PackageDetailSectionInfo = 0,
+    PackageDetailSectionWarning = 0,
+    PackageDetailSectionInfo,
     PackageDetailSectionAction,
     PackageDetailSectionDescription,
     PackageDetailSectionCount,
@@ -35,6 +36,9 @@ typedef NS_ENUM(NSInteger, PackageDetailSection) {
             @[@"Category", package.category],
         ];
         NSMutableArray<NSNumber *> *sections = [NSMutableArray array];
+        if (package.unstableWarning.length > 0) {
+            [sections addObject:@(PackageDetailSectionWarning)];
+        }
         [sections addObject:@(PackageDetailSectionInfo)];
         if (package.settingsSection != NSIntegerMax) {
             [sections addObject:@(PackageDetailSectionAction)];
@@ -233,6 +237,7 @@ typedef NS_ENUM(NSInteger, PackageDetailSection) {
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section
 {
     switch ([self sectionAtIndex:section]) {
+        case PackageDetailSectionWarning:     return 1;
         case PackageDetailSectionInfo:        return (NSInteger)self.infoRows.count;
         case PackageDetailSectionAction:      return 1;
         case PackageDetailSectionDescription: return 1;
@@ -244,6 +249,7 @@ typedef NS_ENUM(NSInteger, PackageDetailSection) {
 - (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section
 {
     switch ([self sectionAtIndex:section]) {
+        case PackageDetailSectionWarning:     return nil;
         case PackageDetailSectionInfo:        return @"Information";
         case PackageDetailSectionAction:      return @"Configure";
         case PackageDetailSectionDescription: return @"Description";
@@ -263,6 +269,49 @@ typedef NS_ENUM(NSInteger, PackageDetailSection) {
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath
 {
     switch ([self sectionAtIndex:indexPath.section]) {
+        case PackageDetailSectionWarning: {
+            UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"WarningCell"];
+            if (!cell) {
+                cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault
+                                              reuseIdentifier:@"WarningCell"];
+                cell.selectionStyle = UITableViewCellSelectionStyleNone;
+            }
+            // Wipe any previous subviews from cell reuse before rebuilding.
+            for (UIView *v in [cell.contentView.subviews copy]) [v removeFromSuperview];
+            cell.textLabel.text   = nil;
+            cell.imageView.image  = nil;
+            cell.backgroundColor  = [UIColor.systemRedColor colorWithAlphaComponent:0.14];
+
+            UIImageView *icon = [[UIImageView alloc] initWithImage:[UIImage systemImageNamed:@"exclamationmark.triangle.fill"]];
+            icon.translatesAutoresizingMaskIntoConstraints = NO;
+            icon.tintColor = UIColor.systemRedColor;
+            icon.preferredSymbolConfiguration =
+                [UIImageSymbolConfiguration configurationWithPointSize:20.0 weight:UIImageSymbolWeightSemibold];
+            [icon setContentHuggingPriority:UILayoutPriorityRequired forAxis:UILayoutConstraintAxisHorizontal];
+            [icon setContentCompressionResistancePriority:UILayoutPriorityRequired forAxis:UILayoutConstraintAxisHorizontal];
+            [cell.contentView addSubview:icon];
+
+            UILabel *label = [[UILabel alloc] init];
+            label.translatesAutoresizingMaskIntoConstraints = NO;
+            label.text = self.package.unstableWarning;
+            label.textColor = UIColor.systemRedColor;
+            label.font = [UIFont systemFontOfSize:14.0 weight:UIFontWeightSemibold];
+            label.numberOfLines = 0;
+            [cell.contentView addSubview:label];
+
+            UILayoutGuide *m = cell.contentView.layoutMarginsGuide;
+            [NSLayoutConstraint activateConstraints:@[
+                [icon.leadingAnchor    constraintEqualToAnchor:m.leadingAnchor],
+                [icon.topAnchor        constraintEqualToAnchor:m.topAnchor constant:2.0],
+                [icon.widthAnchor      constraintEqualToConstant:22.0],
+
+                [label.leadingAnchor   constraintEqualToAnchor:icon.trailingAnchor constant:10.0],
+                [label.trailingAnchor  constraintEqualToAnchor:m.trailingAnchor],
+                [label.topAnchor       constraintEqualToAnchor:m.topAnchor],
+                [label.bottomAnchor    constraintEqualToAnchor:m.bottomAnchor],
+            ]];
+            return cell;
+        }
         case PackageDetailSectionInfo: {
             UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"InfoCell"];
             if (!cell) {

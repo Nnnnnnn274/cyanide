@@ -39,6 +39,12 @@ typedef NS_ENUM(NSInteger, PackageInstallKind) {
 // (install/uninstall is its only operation).
 @property (nonatomic, assign) NSInteger settingsSection;
 
+// If non-nil, the detail view renders this text as a red disclaimer banner
+// above the Information card. Use for packages that are known to be unstable
+// (SpringBoard crashes, dropped events, layout glitches, etc.) so users can't
+// miss the warning.
+@property (nonatomic, copy, nullable) NSString *unstableWarning;
+
 @property (nonatomic, readonly, assign) BOOL isInstalled;
 
 - (instancetype)initWithIdentifier:(NSString *)identifier
