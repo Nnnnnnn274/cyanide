@@ -214,12 +214,16 @@ static uint32_t reap_dead_port_names(const char *reason)
         uint64_t total = __sync_add_and_fetch(&reapTotal, dead);
         uint64_t events = __sync_add_and_fetch(&reapEvents, 1);
         bool startup = events <= 2;
-        bool periodic = (events % 50) == 0;
+        bool periodic = (events % 200) == 0;
         bool verbose = remote_call_verbose_logging();
         if (startup || periodic || verbose) {
-            printf("[RemoteCall] reaped %u dead Mach port names%s%s total=%u (run=%llu events=%llu)\n",
-                   dead, reason ? " via " : "", reason ?: "", namesCount,
-                   (unsigned long long)total, (unsigned long long)events);
+            printf("[RemoteCall] reaped %u dead Mach port names%s%s current=%u cumulative=%llu events=%llu\n",
+                   dead,
+                   reason ? " via " : "",
+                   reason ?: "",
+                   namesCount,
+                   (unsigned long long)total,
+                   (unsigned long long)events);
         }
     }
 
@@ -240,7 +244,7 @@ static void reap_dead_port_names_if_needed(const char *reason)
 {
     static volatile uint32_t signCount = 0;
     uint32_t count = __sync_add_and_fetch(&signCount, 1);
-    if ((count & 0x7f) != 0) return;
+    if ((count & 0x3f) != 0) return;
     (void)reap_dead_port_names(reason);
 }
 

@@ -49,6 +49,7 @@ static const uint64_t kRSSIWifiLabelTag = 99422;
 static const uint64_t kRSSICellLabelTag = 99423;
 static const double   kRSSIFontPt = 9.0;
 static const double   kRSSIHorizontalPad = 6.0;  // widen label past icon so 3 digits fit
+static const uint64_t kRSSIChromeRefreshTicks = 10;
 
 #define kRSSIMaxInstances 8
 static RSSIInstance gRSSIWifi[kRSSIMaxInstances];
@@ -57,6 +58,18 @@ static RSSIInstance gRSSICell[kRSSIMaxInstances];
 static int          gRSSICellCount = 0;
 
 static uint64_t gRSSIApplyTick = 0;
+static bool gRSSIDiscoveredOnce = false;
+static bool gDiscoverNeedWifi = false;
+static bool gDiscoverNeedCell = false;
+
+#define kRSSIMaxFound 16
+static uint64_t gFoundWifi[kRSSIMaxFound];
+static int      gFoundWifiCount = 0;
+static uint64_t gFoundCell[kRSSIMaxFound];
+static int      gFoundCellCount = 0;
+
+static void rssidisplay_record_found(uint64_t *list, int *count, uint64_t view);
+static void rssidisplay_walk(uint64_t view, int depth);
 
 // Cached classes / sels.
 static uint64_t gClsSTUIWifi = 0;
@@ -76,6 +89,10 @@ static uint64_t gSelPerformMain = 0;
 static uint64_t gSelAlloc = 0;
 static uint64_t gSelInitUTF8 = 0;
 static uint64_t gSelNumberOfActiveBars = 0;
+static uint64_t gAssocWifiSignalKey = 0;
+static uint64_t gAssocCellSignalKey = 0;
+static uint64_t gAssocWifiWindowKey = 0;
+static uint64_t gAssocCellWindowKey = 0;
 
 static uint64_t gClsSBWiFiManager = 0;
 static uint64_t gSBWiFiManager = 0;
@@ -109,6 +126,197 @@ static bool rssidisplay_ensure_classes(void)
     if (!gSelNumberOfActiveBars) gSelNumberOfActiveBars = r_sel("numberOfActiveBars");
 
     return r_is_objc_ptr(gClsUILabel) && r_is_objc_ptr(gClsUIApplication);
+}
+
+static uint64_t rssidisplay_shared_app(void)
+{
+    if (!r_is_objc_ptr(gClsUIApplication)) gClsUIApplication = r_class("UIApplication");
+    if (!r_is_objc_ptr(gClsUIApplication)) return 0;
+    return r_msg2_main(gClsUIApplication, "sharedApplication", 0, 0, 0, 0);
+}
+
+static bool rssidisplay_validate_signal_view(uint64_t view, bool wifi)
+{
+    if (!r_is_objc_ptr(view) || !rssidisplay_ensure_classes()) return false;
+    uint64_t cls = wifi ? gClsSTUIWifi : gClsSTUICell;
+    if (!r_is_objc_ptr(cls)) return false;
+    return (r_msg(view, gSelIsKindOfClass, cls, 0, 0, 0) & 0xff) != 0;
+}
+
+static uint64_t rssidisplay_assoc_key(bool wifi)
+{
+    uint64_t *slot = wifi ? &gAssocWifiSignalKey : &gAssocCellSignalKey;
+    if (!*slot) {
+        *slot = r_sel(wifi ? "darkswordRSSIWifiSignalView" : "darkswordRSSICellSignalView");
+    }
+    return *slot;
+}
+
+static uint64_t rssidisplay_window_assoc_key(bool wifi)
+{
+    uint64_t *slot = wifi ? &gAssocWifiWindowKey : &gAssocCellWindowKey;
+    if (!*slot) {
+        *slot = r_sel(wifi ? "darkswordRSSIWifiWindow" : "darkswordRSSICellWindow");
+    }
+    return *slot;
+}
+
+static uint64_t rssidisplay_get_associated_signal(uint64_t app, bool wifi)
+{
+    uint64_t key = rssidisplay_assoc_key(wifi);
+    if (!r_is_objc_ptr(app) || !key) return 0;
+    uint64_t value = r_dlsym_call(R_TIMEOUT, "objc_getAssociatedObject",
+                                  app, key, 0, 0, 0, 0, 0, 0);
+    if (!r_is_objc_ptr(value)) return 0;
+    uint64_t ptr = r_msg2(value, "pointerValue", 0, 0, 0, 0);
+    return rssidisplay_validate_signal_view(ptr, wifi) ? ptr : 0;
+}
+
+static void rssidisplay_set_associated_signal(uint64_t app, bool wifi, uint64_t view)
+{
+    if (!r_is_objc_ptr(app) || !rssidisplay_validate_signal_view(view, wifi)) return;
+    uint64_t NSValue = r_class("NSValue");
+    if (!r_is_objc_ptr(NSValue)) return;
+    uint64_t value = r_msg2(NSValue, "valueWithPointer:", view, 0, 0, 0);
+    uint64_t key = rssidisplay_assoc_key(wifi);
+    if (!r_is_objc_ptr(value) || !key) return;
+    r_dlsym_call(R_TIMEOUT, "objc_setAssociatedObject",
+                 app, key, value, 1, 0, 0, 0, 0);
+}
+
+static uint64_t rssidisplay_get_associated_window(uint64_t app, bool wifi)
+{
+    uint64_t key = rssidisplay_window_assoc_key(wifi);
+    if (!r_is_objc_ptr(app) || !key) return 0;
+    uint64_t value = r_dlsym_call(R_TIMEOUT, "objc_getAssociatedObject",
+                                  app, key, 0, 0, 0, 0, 0, 0);
+    if (!r_is_objc_ptr(value)) return 0;
+    uint64_t win = r_msg2(value, "pointerValue", 0, 0, 0, 0);
+    return r_is_objc_ptr(win) ? win : 0;
+}
+
+static void rssidisplay_set_associated_window(uint64_t app, bool wifi, uint64_t win)
+{
+    if (!r_is_objc_ptr(app) || !r_is_objc_ptr(win)) return;
+    uint64_t NSValue = r_class("NSValue");
+    if (!r_is_objc_ptr(NSValue)) return;
+    uint64_t value = r_msg2(NSValue, "valueWithPointer:", win, 0, 0, 0);
+    uint64_t key = rssidisplay_window_assoc_key(wifi);
+    if (!r_is_objc_ptr(value) || !key) return;
+    r_dlsym_call(R_TIMEOUT, "objc_setAssociatedObject",
+                 app, key, value, 1, 0, 0, 0, 0);
+}
+
+static bool rssidisplay_use_known_views(bool needWifi, bool needCell)
+{
+    gFoundWifiCount = 0;
+    gFoundCellCount = 0;
+    if (!rssidisplay_ensure_classes()) return false;
+
+    for (int i = 0; needWifi && i < gRSSIWifiCount; i++) {
+        if (rssidisplay_validate_signal_view(gRSSIWifi[i].signalView, true)) {
+            rssidisplay_record_found(gFoundWifi, &gFoundWifiCount, gRSSIWifi[i].signalView);
+        }
+    }
+    for (int i = 0; needCell && i < gRSSICellCount; i++) {
+        if (rssidisplay_validate_signal_view(gRSSICell[i].signalView, false)) {
+            rssidisplay_record_found(gFoundCell, &gFoundCellCount, gRSSICell[i].signalView);
+        }
+    }
+
+    uint64_t app = 0;
+    if (needWifi && gFoundWifiCount == 0) {
+        if (!app) app = rssidisplay_shared_app();
+        uint64_t view = rssidisplay_get_associated_signal(app, true);
+        if (view) rssidisplay_record_found(gFoundWifi, &gFoundWifiCount, view);
+    }
+    if (needCell && gFoundCellCount == 0) {
+        if (!app) app = rssidisplay_shared_app();
+        uint64_t view = rssidisplay_get_associated_signal(app, false);
+        if (view) rssidisplay_record_found(gFoundCell, &gFoundCellCount, view);
+    }
+
+    bool ok = (!needWifi || gFoundWifiCount > 0) &&
+              (!needCell || gFoundCellCount > 0);
+    if (ok) {
+        gRSSIDiscoveredOnce = true;
+        if (rssidisplay_first_tick()) {
+            printf("[RSSI] using cached signal views wifi=%d cell=%d\n",
+                   gFoundWifiCount,
+                   gFoundCellCount);
+        }
+    }
+    return ok;
+}
+
+static void rssidisplay_store_known_views(void)
+{
+    uint64_t app = rssidisplay_shared_app();
+    if (!r_is_objc_ptr(app)) return;
+    if (gFoundWifiCount > 0) rssidisplay_set_associated_signal(app, true, gFoundWifi[0]);
+    if (gFoundCellCount > 0) rssidisplay_set_associated_signal(app, false, gFoundCell[0]);
+}
+
+static bool rssidisplay_found_needed(bool needWifi, bool needCell)
+{
+    return (!needWifi || gFoundWifiCount > 0) &&
+           (!needCell || gFoundCellCount > 0);
+}
+
+static bool rssidisplay_scan_window(uint64_t app, uint64_t win, const char *source,
+                                    uint64_t sceneIndex, uint64_t windowIndex,
+                                    bool needWifi, bool needCell)
+{
+    if (!r_is_objc_ptr(win)) return false;
+    int beforeWifi = gFoundWifiCount;
+    int beforeCell = gFoundCellCount;
+
+    rssidisplay_walk(win, 0);
+
+    bool hitWifi = gFoundWifiCount > beforeWifi;
+    bool hitCell = gFoundCellCount > beforeCell;
+    if (hitWifi || hitCell) {
+        uint64_t winClass = r_dlsym_call(R_TIMEOUT, "object_getClass",
+                                         win, 0, 0, 0, 0, 0, 0, 0);
+        printf("[RSSI] discovery hit source=%s scene=%llu window=%llu win=0x%llx cls=0x%llx wifi+%d cell+%d totals=%d/%d\n",
+               source ?: "unknown",
+               (unsigned long long)sceneIndex,
+               (unsigned long long)windowIndex,
+               win,
+               winClass,
+               gFoundWifiCount - beforeWifi,
+               gFoundCellCount - beforeCell,
+               gFoundWifiCount,
+               gFoundCellCount);
+        if (r_is_objc_ptr(app)) {
+            if (hitWifi) rssidisplay_set_associated_window(app, true, win);
+            if (hitCell) rssidisplay_set_associated_window(app, false, win);
+        }
+    }
+
+    return rssidisplay_found_needed(needWifi, needCell);
+}
+
+static bool rssidisplay_scan_cached_windows(bool needWifi, bool needCell)
+{
+    uint64_t app = rssidisplay_shared_app();
+    if (!r_is_objc_ptr(app)) return false;
+
+    if (needWifi && gFoundWifiCount == 0) {
+        uint64_t win = rssidisplay_get_associated_window(app, true);
+        if (win && rssidisplay_scan_window(app, win, "cached-wifi-window", 0, 0,
+                                           needWifi, needCell)) {
+            return true;
+        }
+    }
+    if (needCell && gFoundCellCount == 0) {
+        uint64_t win = rssidisplay_get_associated_window(app, false);
+        if (win && rssidisplay_scan_window(app, win, "cached-cell-window", 0, 0,
+                                           needWifi, needCell)) {
+            return true;
+        }
+    }
+    return rssidisplay_found_needed(needWifi, needCell);
 }
 
 static int rssidisplay_read_bars(uint64_t signalView)
@@ -201,12 +409,6 @@ static int rssidisplay_read_cell_rsrp_dbm(void)
 
 // === Discovery ============================================================
 
-#define kRSSIMaxFound 16
-static uint64_t gFoundWifi[kRSSIMaxFound];
-static int      gFoundWifiCount = 0;
-static uint64_t gFoundCell[kRSSIMaxFound];
-static int      gFoundCellCount = 0;
-
 static void rssidisplay_record_found(uint64_t *list, int *count, uint64_t view)
 {
     if (!list || !count || !r_is_objc_ptr(view)) return;
@@ -221,14 +423,19 @@ static void rssidisplay_record_found(uint64_t *list, int *count, uint64_t view)
 static void rssidisplay_walk(uint64_t view, int depth)
 {
     if (!r_is_objc_ptr(view) || depth > 12) return;
+    if (rssidisplay_found_needed(gDiscoverNeedWifi, gDiscoverNeedCell)) return;
 
-    if (r_is_objc_ptr(gClsSTUIWifi) &&
+    if (gDiscoverNeedWifi &&
+        r_is_objc_ptr(gClsSTUIWifi) &&
         (r_msg(view, gSelIsKindOfClass, gClsSTUIWifi, 0, 0, 0) & 0xff) != 0) {
         rssidisplay_record_found(gFoundWifi, &gFoundWifiCount, view);
+        if (rssidisplay_found_needed(gDiscoverNeedWifi, gDiscoverNeedCell)) return;
     }
-    if (r_is_objc_ptr(gClsSTUICell) &&
+    if (gDiscoverNeedCell &&
+        r_is_objc_ptr(gClsSTUICell) &&
         (r_msg(view, gSelIsKindOfClass, gClsSTUICell, 0, 0, 0) & 0xff) != 0) {
         rssidisplay_record_found(gFoundCell, &gFoundCellCount, view);
+        if (rssidisplay_found_needed(gDiscoverNeedWifi, gDiscoverNeedCell)) return;
     }
 
     uint64_t subs = r_msg(view, gSelSubviews, 0, 0, 0, 0);
@@ -238,6 +445,7 @@ static void rssidisplay_walk(uint64_t view, int depth)
     for (uint64_t i = 0; i < cnt; i++) {
         uint64_t sub = r_msg(subs, gSelObjectAtIndex, i, 0, 0, 0);
         rssidisplay_walk(sub, depth + 1);
+        if (rssidisplay_found_needed(gDiscoverNeedWifi, gDiscoverNeedCell)) return;
     }
 }
 
@@ -245,14 +453,28 @@ static void rssidisplay_walk(uint64_t view, int depth)
 // -[UIApplication windows] to "windows of the active foreground scene", so a
 // pure [app windows] walk misses the lock-screen status bar, the
 // per-app status-bar host, etc. SpringBoard runs many scenes simultaneously.
-static void rssidisplay_discover(void)
+static void rssidisplay_discover(bool needWifi, bool needCell)
 {
     gFoundWifiCount = 0;
     gFoundCellCount = 0;
     if (!rssidisplay_ensure_classes()) return;
+    gRSSIDiscoveredOnce = true;
+    gDiscoverNeedWifi = needWifi;
+    gDiscoverNeedCell = needCell;
 
-    uint64_t app = r_msg2_main(gClsUIApplication, "sharedApplication", 0, 0, 0, 0);
-    if (!r_is_objc_ptr(app)) return;
+    uint64_t app = rssidisplay_shared_app();
+    if (!r_is_objc_ptr(app)) {
+        gDiscoverNeedWifi = false;
+        gDiscoverNeedCell = false;
+        return;
+    }
+
+    if (rssidisplay_scan_cached_windows(needWifi, needCell)) {
+        rssidisplay_store_known_views();
+        gDiscoverNeedWifi = false;
+        gDiscoverNeedCell = false;
+        return;
+    }
 
     // Path A: connectedScenes — catches every UIWindowScene the process owns.
     uint64_t scenes = r_msg2_main(app, "connectedScenes", 0, 0, 0, 0);
@@ -274,7 +496,13 @@ static void rssidisplay_discover(void)
                     if (wcnt == 0 || wcnt > 64) continue;
                     for (uint64_t j = 0; j < wcnt; j++) {
                         uint64_t win = r_msg(sceneWins, gSelObjectAtIndex, j, 0, 0, 0);
-                        rssidisplay_walk(win, 0);
+                        if (rssidisplay_scan_window(app, win, "connectedScenes",
+                                                    i, j, needWifi, needCell)) {
+                            rssidisplay_store_known_views();
+                            gDiscoverNeedWifi = false;
+                            gDiscoverNeedCell = false;
+                            return;
+                        }
                     }
                 }
             }
@@ -289,15 +517,24 @@ static void rssidisplay_discover(void)
         if (cnt > 0 && cnt < 64) {
             for (uint64_t i = 0; i < cnt; i++) {
                 uint64_t win = r_msg(windows, gSelObjectAtIndex, i, 0, 0, 0);
-                rssidisplay_walk(win, 0);
+                if (rssidisplay_scan_window(app, win, "legacy-windows",
+                                            0, i, needWifi, needCell)) {
+                    rssidisplay_store_known_views();
+                    gDiscoverNeedWifi = false;
+                    gDiscoverNeedCell = false;
+                    return;
+                }
             }
         }
     }
 
+    rssidisplay_store_known_views();
     if (rssidisplay_first_tick()) {
         printf("[RSSI] discovered wifi=%d cell=%d signal views\n",
                gFoundWifiCount, gFoundCellCount);
     }
+    gDiscoverNeedWifi = false;
+    gDiscoverNeedCell = false;
 }
 
 // === Text helpers =========================================================
@@ -421,6 +658,22 @@ static bool rssidisplay_apply_one(RSSIInstance *inst, uint64_t signalView,
 {
     if (!inst || !r_is_objc_ptr(signalView)) return false;
 
+    uint64_t label = inst->label;
+    uint64_t taggedLabel = r_msg2_main(signalView, "viewWithTag:", tag, 0, 0, 0);
+    if (r_is_objc_ptr(taggedLabel)) label = taggedLabel;
+    if (r_is_objc_ptr(label) &&
+        inst->configured &&
+        (gRSSIApplyTick % kRSSIChromeRefreshTicks) != 0) {
+        inst->signalView = signalView;
+        inst->label = label;
+        r_msg2_main(label, "setHidden:", 0, 0, 0, 0);
+        r_msg2_main(signalView, "bringSubviewToFront:", label, 0, 0, 0);
+        uint64_t labelLayer = r_msg2_main(label, "layer", 0, 0, 0, 0);
+        rssidisplay_hide_bar_sublayers(signalView, labelLayer);
+        rssidisplay_set_label_text(label, text);
+        return true;
+    }
+
     RDGRect64 bounds = {0};
     if (!r_msg2_main_struct_ret(signalView, "bounds",
                                 &bounds, sizeof(bounds),
@@ -442,11 +695,6 @@ static bool rssidisplay_apply_one(RSSIInstance *inst, uint64_t signalView,
     // Try to find an existing label we previously added (across respawns this
     // works even when our in-process pointer is stale, because the label
     // persists as a tagged subview of the signal view).
-    uint64_t label = inst->label;
-    if (!r_is_objc_ptr(label)) {
-        label = r_msg2_main(signalView, "viewWithTag:", tag, 0, 0, 0);
-    }
-
     RDGRect64 frame = {
         -kRSSIHorizontalPad,
         0,
@@ -590,7 +838,9 @@ bool rssidisplay_apply_in_session(bool showWifi, bool showCell)
         return false;
     }
 
-    rssidisplay_discover();
+    if (!rssidisplay_use_known_views(showWifi, showCell)) {
+        rssidisplay_discover(showWifi, showCell);
+    }
 
     bool any = false;
 
@@ -667,7 +917,7 @@ bool rssidisplay_stop_in_session(void)
     // so also unhide any leftover hidden bar sublayers on currently-visible
     // signal views — defensive cleanup against partial state from earlier
     // sessions.
-    rssidisplay_discover();
+    rssidisplay_discover(true, true);
     for (int i = 0; i < gFoundWifiCount; i++) rssidisplay_unhide_bar_sublayers(gFoundWifi[i]);
     for (int i = 0; i < gFoundCellCount; i++) rssidisplay_unhide_bar_sublayers(gFoundCell[i]);
 
@@ -700,6 +950,10 @@ void rssidisplay_forget_remote_state(void)
     gSelAlloc = 0;
     gSelInitUTF8 = 0;
     gSelNumberOfActiveBars = 0;
+    gAssocWifiSignalKey = 0;
+    gAssocCellSignalKey = 0;
+    gAssocWifiWindowKey = 0;
+    gAssocCellWindowKey = 0;
     gClsSBWiFiManager = 0;
     gSBWiFiManager = 0;
     gClsSBTelephonyManager = 0;
@@ -708,5 +962,6 @@ void rssidisplay_forget_remote_state(void)
     gWifiRssiFallback = 0;
     gCellRsrpFallback = 0;
     gRSSIApplyTick = 0;
+    gRSSIDiscoveredOnce = false;
     printf("[RSSI] forgot remote state\n");
 }

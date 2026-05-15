@@ -62,8 +62,14 @@ NSString * const kInstallerOTADisabledIntent = @"installer.ota.disabledIntent";
 - (BOOL)isQueuedForApply
 {
     if (self.kind != PackageInstallKindToggle || !self.enabledKey) return NO;
+    if (self.isInstallDisabled) return NO;
     NSUserDefaults *d = [NSUserDefaults standardUserDefaults];
     return [d boolForKey:self.enabledKey] && !settings_tweak_is_applied(self.enabledKey);
+}
+
+- (BOOL)isInstallDisabled
+{
+    return self.installDisabledReason.length > 0;
 }
 
 - (void)install   { [[PackageQueue sharedQueue] toggleForPackage:self]; }

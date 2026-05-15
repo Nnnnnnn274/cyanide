@@ -39,15 +39,17 @@ static const NSInteger kSecPowercuff = 8;
         Package *signal = [[Package alloc] initWithIdentifier:@"com.darksword.rssidisplay"
                                            name:@"Signal Readouts"
                                shortDescription:@"RSRP dBm on cellular, bar count on WiFi"
-                                longDescription:@"Replaces the signal-strength glyphs in the status bar with live numeric readouts: RSRP in dBm for cellular, and the active bar count for WiFi. Updates roughly once per second.\n\nToggle WiFi-only or cellular-only in the Settings tab."
+                                longDescription:@"Replaces the signal-strength glyphs in the status bar with live numeric readouts: RSRP in dBm for cellular, and the active bar count for WiFi. Updates roughly once per second.\n\nToggle WiFi-only or cellular-only in the Settings tab.\n\nBuggy: this currently interferes with other tweaks too much. It is a work in progress and is disabled for now."
                                         version:version
                                          author:@"zeroxjf"
                                        category:@"Beta"
                                      symbolName:@"antenna.radiowaves.left.and.right"
                                            kind:PackageInstallKindToggle
                                      enabledKey:kSettingsRSSIDisplayEnabled
-                                          isNew:YES];
+                                          isNew:NO];
         signal.settingsSection = kSecRSSI;
+        signal.unstableWarning = @"Buggy: Signal Readouts currently interferes with other tweaks too much. It is a work in progress and is disabled for now.";
+        signal.installDisabledReason = signal.unstableWarning;
 
         Package *sbc = [[Package alloc] initWithIdentifier:@"com.darksword.sbcustomizer"
                                            name:@"SBCustomizer"

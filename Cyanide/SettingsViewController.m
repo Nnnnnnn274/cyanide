@@ -113,6 +113,7 @@ extern int  escape_sbx_demo3(void);
 
 static BOOL g_kexploit_done = NO;
 static volatile int g_settings_actions_running = 0;
+static volatile int g_settings_actions_rerun_requested = 0;
 static volatile int g_springboard_rc_ready = 0;
 static volatile int g_springboard_sandbox_escaped = 0;
 static volatile int g_statbar_live_running = 0;
@@ -121,6 +122,7 @@ static volatile int g_rssi_live_running = 0;
 static volatile int g_rssi_live_stop_requested = 0;
 static volatile int g_axonlite_live_running = 0;
 static volatile int g_axonlite_live_stop_requested = 0;
+static volatile int g_app_in_background = 0;
 static volatile int g_screen_awake = 1;
 static volatile int g_settings_termination_cleanup_started = 0;
 static volatile int g_settings_cleanup_running = 0;
@@ -134,11 +136,14 @@ static const NSInteger kSBCDefaultCols = 4;
 static const NSInteger kSBCDefaultRows = 6;
 static const BOOL kSBCDefaultHideLabels = NO;
 static const useconds_t kStatBarLiveIntervalUS = 1000000;
+static const useconds_t kStatBarLiveBackgroundIntervalUS = 1000000;
 static const NSUInteger kStatBarLiveMaxTicks = 43200;
 static const int64_t kLiveBackgroundTaskGraceSeconds = 10;
 static const useconds_t kRSSILiveIntervalUS = 1000000;
+static const useconds_t kRSSILiveBackgroundIntervalUS = 1000000;
 static const NSUInteger kRSSILiveMaxTicks = 43200;
 static const useconds_t kAxonLiteLiveIntervalUS = 1200000;
+static const useconds_t kAxonLiteLiveBackgroundIntervalUS = 1200000;
 static const NSUInteger kAxonLiteLiveMaxTicks = 43200;
 static NSString * const kSettingsRemoteCallStateDidChangeNotification = @"SettingsRemoteCallStateDidChangeNotification";
 NSString * const kSettingsActionsDidCompleteNotification = @"SettingsActionsDidCompleteNotification";
@@ -215,10 +220,17 @@ static NSArray<NSString *> *settings_rc_backed_tweak_keys(void)
 static void settings_reconcile_applied_from_defaults(void)
 {
     NSUserDefaults *d = [NSUserDefaults standardUserDefaults];
-    BOOL rcReady = (g_springboard_rc_ready != 0);
     for (NSString *key in settings_rc_backed_tweak_keys()) {
-        settings_mark_tweak_applied(key, rcReady && [d boolForKey:key]);
+        if (![d boolForKey:key]) settings_mark_tweak_applied(key, NO);
     }
+}
+
+static void settings_notify_package_queue_changed_async(void)
+{
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [[NSNotificationCenter defaultCenter] postNotificationName:PackageQueueDidChangeNotification
+                                                            object:[PackageQueue sharedQueue]];
+    });
 }
 
 static NSObject *settings_rc_lock(void) {
@@ -256,6 +268,32 @@ static BOOL settings_should_log_statbar_tick(NSUInteger tick) {
     // off, then go silent forever. The polling continues; we just stop
     // narrating it.
     return tick == 0;
+}
+
+static useconds_t settings_live_interval(useconds_t foregroundUS, useconds_t backgroundUS)
+{
+    return (g_app_in_background != 0) ? backgroundUS : foregroundUS;
+}
+
+static const char *settings_live_context(void)
+{
+    return (g_app_in_background != 0) ? "background" : "foreground";
+}
+
+static BOOL settings_app_state_is_foreground(void)
+{
+    UIApplicationState state = [UIApplication sharedApplication].applicationState;
+    return state == UIApplicationStateActive || state == UIApplicationStateInactive;
+}
+
+static NSUInteger settings_live_failure_limit(NSUInteger foregroundLimit)
+{
+    return (g_app_in_background != 0 || g_screen_awake == 0) ? 1 : foregroundLimit;
+}
+
+static BOOL settings_rssi_install_allowed(void)
+{
+    return NO;
 }
 
 static BOOL settings_read_screen_awake(void)
@@ -323,6 +361,7 @@ static void settings_handle_springboard_restart(void)
             g_springboard_sandbox_escaped = 0;
 
             statbar_forget_remote_state();
+            rssidisplay_forget_remote_state();
             axonlite_forget_remote_state();
             if (hadSession) {
                 abandon_remote_call();
@@ -478,6 +517,8 @@ static void settings_notify_remote_call_state_changed(void)
         [[NSNotificationCenter defaultCenter] postNotificationName:kSettingsRemoteCallStateDidChangeNotification
                                                             object:nil];
         if (cleared) {
+            [[NSNotificationCenter defaultCenter] postNotificationName:PackageQueueDidChangeNotification
+                                                                object:[PackageQueue sharedQueue]];
             [[NSNotificationCenter defaultCenter] postNotificationName:kSettingsActionsDidCompleteNotification
                                                                 object:nil];
         }
@@ -946,8 +987,11 @@ static void settings_reset_sbc_defaults(void)
         @synchronized (settings_rc_lock()) {
             if (!g_springboard_rc_ready) return;
             bool ok = settings_apply_sbc_from_defaults_locked(d);
+            settings_mark_tweak_applied(kSettingsSBCEnabled,
+                                        ok && [d boolForKey:kSettingsSBCEnabled]);
             printf("[SETTINGS] SBC reset apply result=%d\n", ok);
         }
+        settings_notify_package_queue_changed_async();
     });
 }
 
@@ -1018,21 +1062,25 @@ static void settings_start_statbar_live_loop(void)
         uint64_t nextTickUS = settings_now_us();
         BOOL pausedForSleep = NO;
 
-        printf("[SETTINGS] StatBar live loop started interval=%uus max=%lu\n",
-               kStatBarLiveIntervalUS, (unsigned long)kStatBarLiveMaxTicks);
+        printf("[SETTINGS] StatBar live loop started interval=%uus background=%uus max=%lu\n",
+               kStatBarLiveIntervalUS,
+               kStatBarLiveBackgroundIntervalUS,
+               (unsigned long)kStatBarLiveMaxTicks);
 
         @try {
             while ([d boolForKey:kSettingsStatBarEnabled] &&
                    !settings_cleanup_in_progress() &&
                    !g_statbar_live_stop_requested &&
                    tick < kStatBarLiveMaxTicks) {
+                useconds_t intervalUS = settings_live_interval(kStatBarLiveIntervalUS,
+                                                               kStatBarLiveBackgroundIntervalUS);
                 if (!settings_statbar_screen_awake()) {
                     if (!pausedForSleep) {
                         pausedForSleep = YES;
                         printf("[SETTINGS] StatBar paused while screen is asleep\n");
                     }
                     settings_live_loop_sleep_interruptible(0,
-                                                           kStatBarLiveIntervalUS,
+                                                           intervalUS,
                                                            &g_statbar_live_stop_requested);
                     nextTickUS = settings_now_us();
                     continue;
@@ -1062,7 +1110,7 @@ static void settings_start_statbar_live_loop(void)
                     failures++;
                     printf("[SETTINGS] StatBar tick failed tick=%lu failures=%lu\n",
                            (unsigned long)tick, (unsigned long)failures);
-                    if (failures >= 3) break;
+                    if (failures >= settings_live_failure_limit(3)) break;
                 }
 
                 tick++;
@@ -1073,12 +1121,17 @@ static void settings_start_statbar_live_loop(void)
                 uint64_t nowUS = settings_now_us();
                 uint64_t elapsedUS = (tickStartUS != 0 && nowUS >= tickStartUS) ? (nowUS - tickStartUS) : 0;
                 if (nextTickUS != 0) {
-                    nextTickUS += kStatBarLiveIntervalUS;
+                    intervalUS = settings_live_interval(kStatBarLiveIntervalUS,
+                                                        kStatBarLiveBackgroundIntervalUS);
+                    nextTickUS += intervalUS;
                     if (nowUS < nextTickUS) {
                         uint64_t sleepUS = nextTickUS - nowUS;
                         if (settings_should_log_statbar_tick(tick - 1)) {
-                            printf("[SETTINGS] StatBar tick=%lu elapsed=%lluus sleep=%lluus\n",
-                                   (unsigned long)(tick - 1), elapsedUS, sleepUS);
+                            printf("[SETTINGS] StatBar tick=%lu elapsed=%lluus sleep=%lluus mode=%s\n",
+                                   (unsigned long)(tick - 1),
+                                   elapsedUS,
+                                   sleepUS,
+                                   settings_live_context());
                         }
                         settings_live_loop_sleep_interruptible(nextTickUS,
                                                                (useconds_t)sleepUS,
@@ -1086,14 +1139,18 @@ static void settings_start_statbar_live_loop(void)
                     } else {
                         uint64_t overrunUS = nowUS - nextTickUS;
                         if (settings_should_log_statbar_tick(tick - 1)) {
-                            printf("[SETTINGS] StatBar tick=%lu elapsed=%lluus overrun=%lluus\n",
-                                   (unsigned long)(tick - 1), elapsedUS, overrunUS);
+                            printf("[SETTINGS] StatBar tick=%lu elapsed=%lluus overrun=%lluus mode=%s\n",
+                                   (unsigned long)(tick - 1),
+                                   elapsedUS,
+                                   overrunUS,
+                                   settings_live_context());
                         }
                         nextTickUS = nowUS;
                     }
                 } else {
                     settings_live_loop_sleep_interruptible(0,
-                                                           kStatBarLiveIntervalUS,
+                                                           settings_live_interval(kStatBarLiveIntervalUS,
+                                                                                  kStatBarLiveBackgroundIntervalUS),
                                                            &g_statbar_live_stop_requested);
                 }
             }
@@ -1103,7 +1160,7 @@ static void settings_start_statbar_live_loop(void)
                    [d boolForKey:kSettingsStatBarEnabled],
                    (unsigned long)failures,
                    g_statbar_live_stop_requested);
-            if (![d boolForKey:kSettingsStatBarEnabled] || g_statbar_live_stop_requested || failures >= 3) {
+            if (![d boolForKey:kSettingsStatBarEnabled] || g_statbar_live_stop_requested || failures > 0) {
                 settings_end_statbar_background_task_async("live loop exited");
             }
             __sync_lock_release(&g_statbar_live_running);
@@ -1118,6 +1175,7 @@ static void settings_apply_statbar_once_async(const char *reason)
 
     NSUserDefaults *d = [NSUserDefaults standardUserDefaults];
     if (![d boolForKey:kSettingsStatBarEnabled] || !g_springboard_rc_ready) return;
+    if (g_statbar_live_running) return;
 
     dispatch_async(dispatch_get_global_queue(0, 0), ^{
         if (settings_cleanup_in_progress()) return;
@@ -1155,6 +1213,7 @@ static void settings_start_rssi_live_loop(void)
     if (settings_cleanup_in_progress()) return;
 
     NSUserDefaults *d = [NSUserDefaults standardUserDefaults];
+    if (!settings_rssi_install_allowed()) return;
     if (![d boolForKey:kSettingsRSSIDisplayEnabled]) return;
     if (!g_springboard_rc_ready) return;
 
@@ -1176,15 +1235,37 @@ static void settings_start_rssi_live_loop(void)
         NSUInteger tick = 0;
         NSUInteger failures = 0;
         uint64_t nextTickUS = settings_now_us();
+        BOOL pausedForSleep = NO;
 
-        printf("[SETTINGS] RSSI live loop started interval=%uus max=%lu\n",
-               kRSSILiveIntervalUS, (unsigned long)kRSSILiveMaxTicks);
+        printf("[SETTINGS] RSSI live loop started interval=%uus background=%uus max=%lu\n",
+               kRSSILiveIntervalUS,
+               kRSSILiveBackgroundIntervalUS,
+               (unsigned long)kRSSILiveMaxTicks);
 
         @try {
             while ([d boolForKey:kSettingsRSSIDisplayEnabled] &&
                    !settings_cleanup_in_progress() &&
                    !g_rssi_live_stop_requested &&
                    tick < kRSSILiveMaxTicks) {
+                useconds_t intervalUS = settings_live_interval(kRSSILiveIntervalUS,
+                                                               kRSSILiveBackgroundIntervalUS);
+                if (!settings_statbar_screen_awake()) {
+                    if (!pausedForSleep) {
+                        pausedForSleep = YES;
+                        printf("[SETTINGS] RSSI paused while screen is asleep\n");
+                    }
+                    settings_live_loop_sleep_interruptible(0,
+                                                           intervalUS,
+                                                           &g_rssi_live_stop_requested);
+                    nextTickUS = settings_now_us();
+                    continue;
+                }
+                if (pausedForSleep) {
+                    pausedForSleep = NO;
+                    printf("[SETTINGS] RSSI resumed after screen wake\n");
+                }
+
+                uint64_t tickStartUS = settings_now_us();
                 bool ok = false;
 
                 @synchronized (settings_rc_lock()) {
@@ -1197,14 +1278,20 @@ static void settings_start_rssi_live_loop(void)
                                                       [d boolForKey:kSettingsRSSIDisplayCell]);
                 }
 
-                if (tick == 0) printf("[SETTINGS] RSSI first tick result=%d\n", ok);
+                uint64_t tickEndUS = settings_now_us();
+                if (tick == 0) {
+                    uint64_t elapsedUS = tickEndUS >= tickStartUS ? tickEndUS - tickStartUS : 0;
+                    printf("[SETTINGS] RSSI first tick result=%d elapsed=%lluus\n",
+                           ok,
+                           (unsigned long long)elapsedUS);
+                }
                 if (ok) {
                     failures = 0;
                 } else {
                     failures++;
                     printf("[SETTINGS] RSSI tick failed tick=%lu failures=%lu\n",
                            (unsigned long)tick, (unsigned long)failures);
-                    if (failures >= 5) break;
+                    if (failures >= settings_live_failure_limit(5)) break;
                 }
 
                 tick++;
@@ -1212,9 +1299,11 @@ static void settings_start_rssi_live_loop(void)
                     g_rssi_live_stop_requested ||
                     tick >= kRSSILiveMaxTicks) break;
 
-                uint64_t nowUS = settings_now_us();
+                uint64_t nowUS = tickEndUS;
                 if (nextTickUS != 0) {
-                    nextTickUS += kRSSILiveIntervalUS;
+                    intervalUS = settings_live_interval(kRSSILiveIntervalUS,
+                                                        kRSSILiveBackgroundIntervalUS);
+                    nextTickUS += intervalUS;
                     if (nowUS < nextTickUS) {
                         settings_live_loop_sleep_interruptible(nextTickUS,
                                                                (useconds_t)(nextTickUS - nowUS),
@@ -1224,7 +1313,8 @@ static void settings_start_rssi_live_loop(void)
                     }
                 } else {
                     settings_live_loop_sleep_interruptible(0,
-                                                           kRSSILiveIntervalUS,
+                                                           settings_live_interval(kRSSILiveIntervalUS,
+                                                                                  kRSSILiveBackgroundIntervalUS),
                                                            &g_rssi_live_stop_requested);
                 }
             }
@@ -1245,11 +1335,20 @@ static void settings_apply_rssi_once_async(const char *reason)
     if (settings_cleanup_in_progress()) return;
 
     NSUserDefaults *d = [NSUserDefaults standardUserDefaults];
+    if (!settings_rssi_install_allowed()) return;
     if (![d boolForKey:kSettingsRSSIDisplayEnabled] || !g_springboard_rc_ready) return;
+    if (g_rssi_live_running) return;
 
     dispatch_async(dispatch_get_global_queue(0, 0), ^{
         if (settings_cleanup_in_progress()) return;
         bool ok = false;
+        (void)settings_refresh_screen_awake_state(reason ?: "rssi apply");
+        if (!settings_screen_awake_cached()) {
+            printf("[SETTINGS] RSSI lifecycle apply%s%s skipped: screen asleep\n",
+                   reason ? ": " : "", reason ?: "");
+            settings_start_rssi_live_loop();
+            return;
+        }
         @synchronized (settings_rc_lock()) {
             if (settings_cleanup_in_progress() ||
                 ![d boolForKey:kSettingsRSSIDisplayEnabled] ||
@@ -1292,14 +1391,18 @@ static void settings_start_axonlite_live_loop(void)
         uint64_t nextTickUS = settings_now_us();
         BOOL pausedForSleep = NO;
 
-        printf("[SETTINGS] Axon Lite live loop started interval=%uus max=%lu\n",
-               kAxonLiteLiveIntervalUS, (unsigned long)kAxonLiteLiveMaxTicks);
+        printf("[SETTINGS] Axon Lite live loop started interval=%uus background=%uus max=%lu\n",
+               kAxonLiteLiveIntervalUS,
+               kAxonLiteLiveBackgroundIntervalUS,
+               (unsigned long)kAxonLiteLiveMaxTicks);
 
         @try {
             while ([d boolForKey:kSettingsAxonLiteEnabled] &&
                    !settings_cleanup_in_progress() &&
                    !g_axonlite_live_stop_requested &&
                    tick < kAxonLiteLiveMaxTicks) {
+                useconds_t intervalUS = settings_live_interval(kAxonLiteLiveIntervalUS,
+                                                               kAxonLiteLiveBackgroundIntervalUS);
                 // While the screen is blank, SB tears down cover-sheet view
                 // controllers to free memory. Calling into our cached
                 // gAxonCLVC etc during that window risks dereferencing freed
@@ -1311,7 +1414,7 @@ static void settings_start_axonlite_live_loop(void)
                         printf("[SETTINGS] Axon Lite paused while screen is asleep\n");
                     }
                     settings_live_loop_sleep_interruptible(0,
-                                                           kAxonLiteLiveIntervalUS,
+                                                           intervalUS,
                                                            &g_axonlite_live_stop_requested);
                     nextTickUS = settings_now_us();
                     continue;
@@ -1344,7 +1447,7 @@ static void settings_start_axonlite_live_loop(void)
                     failures++;
                     printf("[SETTINGS] Axon Lite tick failed tick=%lu failures=%lu\n",
                            (unsigned long)tick, (unsigned long)failures);
-                    if (failures >= 3) break;
+                    if (failures >= settings_live_failure_limit(3)) break;
                 }
 
                 tick++;
@@ -1354,7 +1457,9 @@ static void settings_start_axonlite_live_loop(void)
 
                 uint64_t nowUS = settings_now_us();
                 if (nextTickUS != 0) {
-                    nextTickUS += kAxonLiteLiveIntervalUS;
+                    intervalUS = settings_live_interval(kAxonLiteLiveIntervalUS,
+                                                        kAxonLiteLiveBackgroundIntervalUS);
+                    nextTickUS += intervalUS;
                     if (nowUS < nextTickUS) {
                         settings_live_loop_sleep_interruptible(nextTickUS,
                                                                (useconds_t)(nextTickUS - nowUS),
@@ -1364,7 +1469,8 @@ static void settings_start_axonlite_live_loop(void)
                     }
                 } else {
                     settings_live_loop_sleep_interruptible(0,
-                                                           kAxonLiteLiveIntervalUS,
+                                                           settings_live_interval(kAxonLiteLiveIntervalUS,
+                                                                                  kAxonLiteLiveBackgroundIntervalUS),
                                                            &g_axonlite_live_stop_requested);
                 }
 
@@ -1409,12 +1515,13 @@ static void settings_apply_axonlite_once_async(const char *reason)
 
 void settings_application_did_enter_background(void)
 {
+    if (__sync_lock_test_and_set(&g_app_in_background, 1)) return;
     if (settings_cleanup_in_progress()) return;
 
     NSUserDefaults *d = [NSUserDefaults standardUserDefaults];
     BOOL anyLiveLoopNeeded =
         ([d boolForKey:kSettingsAxonLiteEnabled]    && g_springboard_rc_ready) ||
-        ([d boolForKey:kSettingsRSSIDisplayEnabled] && g_springboard_rc_ready) ||
+        (settings_rssi_install_allowed() && [d boolForKey:kSettingsRSSIDisplayEnabled] && g_springboard_rc_ready) ||
         ([d boolForKey:kSettingsStatBarEnabled]     && g_springboard_rc_ready);
     if (anyLiveLoopNeeded) {
         if ([d boolForKey:kSettingsKeepAlive]) {
@@ -1429,7 +1536,7 @@ void settings_application_did_enter_background(void)
     if ([d boolForKey:kSettingsAxonLiteEnabled] && g_springboard_rc_ready) {
         settings_apply_axonlite_once_async("entered background");
     }
-    if ([d boolForKey:kSettingsRSSIDisplayEnabled] && g_springboard_rc_ready) {
+    if (settings_rssi_install_allowed() && [d boolForKey:kSettingsRSSIDisplayEnabled] && g_springboard_rc_ready) {
         settings_apply_rssi_once_async("entered background");
     }
     if (![d boolForKey:kSettingsStatBarEnabled] || !g_springboard_rc_ready) {
@@ -1442,6 +1549,8 @@ void settings_application_did_enter_background(void)
 
 void settings_application_will_enter_foreground(void)
 {
+    if (!settings_app_state_is_foreground()) return;
+    g_app_in_background = 0;
     settings_end_statbar_background_task_async("foreground");
     if (settings_cleanup_in_progress()) return;
     settings_apply_statbar_once_async("will enter foreground");
@@ -1451,6 +1560,8 @@ void settings_application_will_enter_foreground(void)
 
 void settings_application_did_become_active(void)
 {
+    if (!settings_app_state_is_foreground()) return;
+    g_app_in_background = 0;
     if (settings_cleanup_in_progress()) return;
     settings_apply_statbar_once_async("became active");
     settings_apply_rssi_once_async("became active");
@@ -1494,6 +1605,16 @@ static BOOL settings_key_is_dark_tweak(NSString *key)
            [key isEqualToString:kSettingsDSDoubleTapToLock];
 }
 
+static BOOL settings_key_affects_package_state(NSString *key)
+{
+    return [key isEqualToString:kSettingsSBCEnabled] ||
+           [key isEqualToString:kSettingsPowercuffEnabled] ||
+           [key isEqualToString:kSettingsStatBarEnabled] ||
+           [key isEqualToString:kSettingsRSSIDisplayEnabled] ||
+           [key isEqualToString:kSettingsAxonLiteEnabled] ||
+           settings_key_is_dark_tweak(key);
+}
+
 static void settings_schedule_live_apply_for_key(NSString *key)
 {
     if (settings_cleanup_in_progress()) {
@@ -1515,12 +1636,17 @@ static void settings_schedule_live_apply_for_key(NSString *key)
                 @synchronized (settings_rc_lock()) {
                     if (settings_cleanup_in_progress() || !g_springboard_rc_ready) return;
                     bool ok = axonlite_apply_in_session();
+                    settings_mark_tweak_applied(kSettingsAxonLiteEnabled,
+                                                ok && [d boolForKey:kSettingsAxonLiteEnabled]);
                     printf("[SETTINGS] live Axon Lite apply result=%d\n", ok);
                 }
                 settings_start_axonlite_live_loop();
+                settings_notify_package_queue_changed_async();
             });
         } else if (![d boolForKey:kSettingsAxonLiteEnabled]) {
             g_axonlite_live_stop_requested = 1;
+            settings_mark_tweak_applied(kSettingsAxonLiteEnabled, NO);
+            settings_notify_package_queue_changed_async();
             if (g_springboard_rc_ready) {
                 dispatch_async(dispatch_get_global_queue(0, 0), ^{
                     @synchronized (settings_rc_lock()) {
@@ -1539,12 +1665,17 @@ static void settings_schedule_live_apply_for_key(NSString *key)
                     if (settings_cleanup_in_progress() || !g_springboard_rc_ready) return;
                     bool ok = statbar_apply_in_session([d boolForKey:kSettingsStatBarCelsius],
                                                        [d boolForKey:kSettingsStatBarHideNet]);
+                    settings_mark_tweak_applied(kSettingsStatBarEnabled,
+                                                ok && [d boolForKey:kSettingsStatBarEnabled]);
                     printf("[SETTINGS] live StatBar apply result=%d\n", ok);
                 }
                 settings_start_statbar_live_loop();
+                settings_notify_package_queue_changed_async();
             });
         } else if (![d boolForKey:kSettingsStatBarEnabled]) {
             g_statbar_live_stop_requested = 1;
+            settings_mark_tweak_applied(kSettingsStatBarEnabled, NO);
+            settings_notify_package_queue_changed_async();
             settings_end_statbar_background_task_async("StatBar disabled");
             if (g_springboard_rc_ready) {
                 dispatch_async(dispatch_get_global_queue(0, 0), ^{
@@ -1557,18 +1688,40 @@ static void settings_schedule_live_apply_for_key(NSString *key)
     }
 
     if (settings_key_is_rssi(key)) {
+        if (!settings_rssi_install_allowed()) {
+            if ([d boolForKey:kSettingsRSSIDisplayEnabled]) {
+                [d setBool:NO forKey:kSettingsRSSIDisplayEnabled];
+                [d synchronize];
+            }
+            g_rssi_live_stop_requested = 1;
+            settings_mark_tweak_applied(kSettingsRSSIDisplayEnabled, NO);
+            settings_notify_package_queue_changed_async();
+            if (g_springboard_rc_ready) {
+                dispatch_async(dispatch_get_global_queue(0, 0), ^{
+                    @synchronized (settings_rc_lock()) {
+                        if (g_springboard_rc_ready) rssidisplay_stop_in_session();
+                    }
+                });
+            }
+            return;
+        }
         if ([d boolForKey:kSettingsRSSIDisplayEnabled] && g_springboard_rc_ready) {
             dispatch_async(dispatch_get_global_queue(0, 0), ^{
                 @synchronized (settings_rc_lock()) {
                     if (settings_cleanup_in_progress() || !g_springboard_rc_ready) return;
                     bool ok = rssidisplay_apply_in_session([d boolForKey:kSettingsRSSIDisplayWifi],
                                                            [d boolForKey:kSettingsRSSIDisplayCell]);
+                    settings_mark_tweak_applied(kSettingsRSSIDisplayEnabled,
+                                                ok && [d boolForKey:kSettingsRSSIDisplayEnabled]);
                     printf("[SETTINGS] live RSSI apply result=%d\n", ok);
                 }
                 settings_start_rssi_live_loop();
+                settings_notify_package_queue_changed_async();
             });
         } else if (![d boolForKey:kSettingsRSSIDisplayEnabled]) {
             g_rssi_live_stop_requested = 1;
+            settings_mark_tweak_applied(kSettingsRSSIDisplayEnabled, NO);
+            settings_notify_package_queue_changed_async();
             if (g_springboard_rc_ready) {
                 dispatch_async(dispatch_get_global_queue(0, 0), ^{
                     @synchronized (settings_rc_lock()) {
@@ -1586,8 +1739,18 @@ static void settings_schedule_live_apply_for_key(NSString *key)
             @synchronized (settings_rc_lock()) {
                 if (settings_cleanup_in_progress() || !g_springboard_rc_ready) return;
                 bool ok = settings_apply_dark_tweaks_from_defaults_locked(d);
+                for (NSString *darkKey in @[
+                    kSettingsDSDisableAppLibrary,
+                    kSettingsDSDisableIconFlyIn,
+                    kSettingsDSZeroWakeAnimation,
+                    kSettingsDSZeroBacklightFade,
+                    kSettingsDSDoubleTapToLock,
+                ]) {
+                    if ([d boolForKey:darkKey]) settings_mark_tweak_applied(darkKey, ok);
+                }
                 printf("[SETTINGS] live DarkSword tweaks apply result=%d\n", ok);
             }
+            settings_notify_package_queue_changed_async();
         });
         return;
     }
@@ -1603,14 +1766,18 @@ static void settings_schedule_live_apply_for_key(NSString *key)
         @synchronized (settings_rc_lock()) {
             if (settings_cleanup_in_progress() || !g_springboard_rc_ready) return;
             bool ok = settings_apply_sbc_from_defaults_locked(d);
+            settings_mark_tweak_applied(kSettingsSBCEnabled,
+                                        ok && [d boolForKey:kSettingsSBCEnabled]);
             printf("[SETTINGS] live SBC apply result=%d\n", ok);
         }
+        settings_notify_package_queue_changed_async();
     });
 }
 
 void settings_register_defaults(void)
 {
-    [[NSUserDefaults standardUserDefaults] registerDefaults:@{
+    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+    [defaults registerDefaults:@{
         kSettingsAutoRunKexploit:    @NO,
         kSettingsRunSandboxEscape:   @YES,
         kSettingsRunPatchSandboxExt: @NO,
@@ -1641,6 +1808,12 @@ void settings_register_defaults(void)
 
         kSettingsAxonLiteEnabled: @NO,
     }];
+    // Signal Readouts is temporarily blocked from installation because its
+    // live RemoteCall refresh still interferes with other SpringBoard tweaks.
+    if ([defaults boolForKey:kSettingsRSSIDisplayEnabled]) {
+        [defaults setBool:NO forKey:kSettingsRSSIDisplayEnabled];
+        [defaults synchronize];
+    }
     settings_install_screen_awake_observers();
 }
 
@@ -1655,8 +1828,9 @@ void settings_run_actions(void)
     NSUserDefaults *d = [NSUserDefaults standardUserDefaults];
     dispatch_async(dispatch_get_global_queue(0, 0), ^{
         if (__sync_lock_test_and_set(&g_settings_actions_running, 1)) {
-            printf("[SETTINGS] actions already running; ignoring duplicate request\n");
-            log_user("[RUN] Already running. Let the current operation finish.\n");
+            __sync_lock_test_and_set(&g_settings_actions_rerun_requested, 1);
+            printf("[SETTINGS] actions already running; queued one follow-up run\n");
+            log_user("[RUN] Already running. Queued one follow-up run for the latest package state.\n");
             return;
         }
         log_session_begin();
@@ -1667,7 +1841,7 @@ void settings_run_actions(void)
             BOOL runSBC = [d boolForKey:kSettingsSBCEnabled];
             BOOL runDarkTweaks = settings_dark_tweaks_any_enabled(d);
             BOOL runStatBar = [d boolForKey:kSettingsStatBarEnabled];
-            BOOL runRSSI = [d boolForKey:kSettingsRSSIDisplayEnabled];
+            BOOL runRSSI = settings_rssi_install_allowed() && [d boolForKey:kSettingsRSSIDisplayEnabled];
             BOOL runAxonLite = [d boolForKey:kSettingsAxonLiteEnabled];
             BOOL needsSpringBoard = runSandboxEscape || runSBC || runDarkTweaks || runStatBar || runRSSI || runAxonLite;
 
@@ -1761,6 +1935,8 @@ void settings_run_actions(void)
                     settings_destroy_springboard_remote_call_locked("switching to thermalmonitord");
                     NSString *lvl = [d stringForKey:kSettingsPowercuffLevel] ?: @"heavy";
                     bool ok = powercuff_apply(lvl.UTF8String);
+                    settings_mark_tweak_applied(kSettingsPowercuffEnabled,
+                                                ok && [d boolForKey:kSettingsPowercuffEnabled]);
                     log_user("%s Powercuff %s through thermalmonitord.\n",
                              ok ? "[OK]" : "[WARN]",
                              ok ? "applied" : "did not apply cleanly");
@@ -1793,6 +1969,8 @@ void settings_run_actions(void)
                     if (runSBC) {
                         settings_progress(&step, total, "Applying icon layout caches");
                         bool ok = settings_apply_sbc_from_defaults_locked(d);
+                        settings_mark_tweak_applied(kSettingsSBCEnabled,
+                                                    ok && [d boolForKey:kSettingsSBCEnabled]);
                         printf("[SETTINGS] SBC result=%d\n", ok);
                         log_user("%s Home screen layout %s; dock=%ld home=%ldx%ld.\n",
                                  ok ? "[OK]" : "[WARN]",
@@ -1805,6 +1983,15 @@ void settings_run_actions(void)
                     if (runDarkTweaks) {
                         settings_progress(&step, total, "Applying DarkSword runtime hooks");
                         bool ok = settings_apply_dark_tweaks_from_defaults_locked(d);
+                        for (NSString *key in @[
+                            kSettingsDSDisableAppLibrary,
+                            kSettingsDSDisableIconFlyIn,
+                            kSettingsDSZeroWakeAnimation,
+                            kSettingsDSZeroBacklightFade,
+                            kSettingsDSDoubleTapToLock,
+                        ]) {
+                            if ([d boolForKey:key]) settings_mark_tweak_applied(key, ok);
+                        }
                         printf("[SETTINGS] DarkSword tweaks result=%d\n", ok);
                         log_user("%s DarkSword hooks %s.\n",
                                  ok ? "[OK]" : "[WARN]",
@@ -1815,6 +2002,8 @@ void settings_run_actions(void)
                         settings_progress(&step, total, "Starting StatBar overlay and 1s feed");
                         bool ok = statbar_apply_in_session([d boolForKey:kSettingsStatBarCelsius],
                                                            [d boolForKey:kSettingsStatBarHideNet]);
+                        settings_mark_tweak_applied(kSettingsStatBarEnabled,
+                                                    ok && [d boolForKey:kSettingsStatBarEnabled]);
                         printf("[SETTINGS] StatBar result=%d\n", ok);
                         log_user("%s StatBar %s.\n",
                                  ok ? "[OK]" : "[WARN]",
@@ -1825,6 +2014,8 @@ void settings_run_actions(void)
                         settings_progress(&step, total, "Starting RSSI dBm signal overlays");
                         bool ok = rssidisplay_apply_in_session([d boolForKey:kSettingsRSSIDisplayWifi],
                                                                [d boolForKey:kSettingsRSSIDisplayCell]);
+                        settings_mark_tweak_applied(kSettingsRSSIDisplayEnabled,
+                                                    ok && [d boolForKey:kSettingsRSSIDisplayEnabled]);
                         printf("[SETTINGS] RSSI result=%d\n", ok);
                         log_user("%s RSSI signal overlays %s.\n",
                                  ok ? "[OK]" : "[WARN]",
@@ -1844,6 +2035,8 @@ void settings_run_actions(void)
                             if (tickOK) ok = true;
                             if (i + 1 < 3) usleep(250000);
                         }
+                        settings_mark_tweak_applied(kSettingsAxonLiteEnabled,
+                                                    ok && [d boolForKey:kSettingsAxonLiteEnabled]);
                         printf("[SETTINGS] Axon Lite result=%d\n", ok);
                         log_user("%s Axon Lite %s.\n",
                                  ok ? "[OK]" : "[WARN]",
@@ -1873,7 +2066,14 @@ void settings_run_actions(void)
             log_session_end();
             __sync_lock_release(&g_settings_actions_running);
             settings_reconcile_applied_from_defaults();
+            if (__sync_bool_compare_and_swap(&g_settings_actions_rerun_requested, 1, 0)) {
+                log_user("[RUN] Applying queued follow-up run.\n");
+                settings_run_actions();
+                return;
+            }
             dispatch_async(dispatch_get_main_queue(), ^{
+                [[NSNotificationCenter defaultCenter] postNotificationName:PackageQueueDidChangeNotification
+                                                                    object:[PackageQueue sharedQueue]];
                 [[NSNotificationCenter defaultCenter] postNotificationName:kSettingsActionsDidCompleteNotification
                                                                     object:nil];
             });
@@ -2656,13 +2856,18 @@ typedef NS_ENUM(NSInteger, RootSection) {
     }
 
     NSDictionary *row = [self rowForTag:sender.tag];
-    [[NSUserDefaults standardUserDefaults] setBool:sender.isOn forKey:row[@"key"]];
-    printf("[SETTINGS] toggle %s=%d\n", [row[@"key"] UTF8String], sender.isOn);
-    if ([row[@"key"] isEqualToString:kSettingsKeepAlive]) {
+    NSString *key = row[@"key"];
+    [[NSUserDefaults standardUserDefaults] setBool:sender.isOn forKey:key];
+    printf("[SETTINGS] toggle %s=%d\n", key.UTF8String, sender.isOn);
+    if ([key isEqualToString:kSettingsKeepAlive]) {
         ds_keepalive_apply_enabled(sender.isOn);
         return;
     }
-    settings_schedule_live_apply_for_key(row[@"key"]);
+    if (settings_key_affects_package_state(key)) {
+        if (!sender.isOn) settings_mark_tweak_applied(key, NO);
+        settings_notify_package_queue_changed_async();
+    }
+    settings_schedule_live_apply_for_key(key);
     [self presentApplyLogIfRunning];
 }
 

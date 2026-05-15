@@ -45,8 +45,13 @@ typedef NS_ENUM(NSInteger, PackageInstallKind) {
 // miss the warning.
 @property (nonatomic, copy, nullable) NSString *unstableWarning;
 
+// Non-nil means users can view the package and uninstall an existing install,
+// but cannot queue a fresh install until the reason is cleared.
+@property (nonatomic, copy, nullable) NSString *installDisabledReason;
+
 @property (nonatomic, readonly, assign) BOOL isInstalled;
 @property (nonatomic, readonly, assign) BOOL isQueuedForApply;
+@property (nonatomic, readonly, assign) BOOL isInstallDisabled;
 
 - (instancetype)initWithIdentifier:(NSString *)identifier
                               name:(NSString *)name

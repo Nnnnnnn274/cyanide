@@ -40,7 +40,7 @@ typedef NS_ENUM(NSInteger, PackageDetailSection) {
             [sections addObject:@(PackageDetailSectionWarning)];
         }
         [sections addObject:@(PackageDetailSectionInfo)];
-        if (package.settingsSection != NSIntegerMax) {
+        if (package.settingsSection != NSIntegerMax && !package.isInstallDisabled) {
             [sections addObject:@(PackageDetailSectionAction)];
         }
         [sections addObject:@(PackageDetailSectionDescription)];
@@ -130,9 +130,15 @@ typedef NS_ENUM(NSInteger, PackageDetailSection) {
     subLabel.textAlignment = NSTextAlignmentCenter;
     [header addSubview:subLabel];
 
-    // NEW badge (optional)
+    // Status badge (optional)
     UIView *badge = nil;
-    if (self.package.isNew) {
+    if (self.package.isInstallDisabled) {
+        badge = [self badgeWithText:@"BUGGY"
+                         background:[UIColor.systemRedColor colorWithAlphaComponent:0.16]
+                          textColor:UIColor.systemRedColor];
+        badge.translatesAutoresizingMaskIntoConstraints = NO;
+        [header addSubview:badge];
+    } else if (self.package.isNew) {
         badge = [self badgeWithText:@"NEW"
                          background:[UIColor colorWithRed:0.95 green:0.55 blue:0.05 alpha:0.18]
                           textColor:[UIColor systemOrangeColor]];
@@ -198,6 +204,9 @@ typedef NS_ENUM(NSInteger, PackageDetailSection) {
     } else if (installed) {
         title = @"Uninstall";
         tint = UIColor.systemRedColor;
+    } else if (self.package.isInstallDisabled) {
+        title = @"Disabled";
+        tint = UIColor.secondaryLabelColor;
     } else {
         title = @"Install";
         style = UIBarButtonItemStyleDone;
@@ -208,6 +217,7 @@ typedef NS_ENUM(NSInteger, PackageDetailSection) {
                                                             target:self
                                                             action:@selector(didTapAction)];
     if (tint) item.tintColor = tint;
+    item.enabled = !self.package.isInstallDisabled || installed || intent != PackageQueueIntentNone;
     self.navigationItem.rightBarButtonItem = item;
 }
 
@@ -217,6 +227,11 @@ typedef NS_ENUM(NSInteger, PackageDetailSection) {
     if (intent != PackageQueueIntentNone) {
         log_user("[INSTALLER] Removed %s from queue\n", self.package.name.UTF8String);
         [[PackageQueue sharedQueue] removePackage:self.package];
+        return;
+    }
+    if (self.package.isInstallDisabled && !self.package.isInstalled) {
+        log_user("[INSTALLER] Signal Readouts is disabled for now: %s\n",
+                 self.package.installDisabledReason.UTF8String);
         return;
     }
     if (self.package.isInstalled) {

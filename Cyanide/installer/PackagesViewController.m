@@ -227,14 +227,16 @@ static NSString * const kGroupByCategoryDefault = @"installer.groupByCategory";
     config.image = [UIImage systemImageNamed:pkg.symbolName];
     config.imageProperties.preferredSymbolConfiguration =
         [UIImageSymbolConfiguration configurationWithPointSize:22.0 weight:UIImageSymbolWeightRegular];
-    config.imageProperties.tintColor       = self.view.tintColor;
+    UIColor *mainColor = pkg.isInstallDisabled ? UIColor.secondaryLabelColor : self.view.tintColor;
+    config.imageProperties.tintColor       = mainColor;
     config.imageProperties.reservedLayoutSize = CGSizeMake(34.0, 28.0);
     config.imageProperties.maximumSize     = CGSizeMake(28.0, 28.0);
     config.imageToTextPadding              = 14.0;
     config.text = pkg.name;
     config.textProperties.font = [UIFont systemFontOfSize:17.0 weight:UIFontWeightSemibold];
+    if (pkg.isInstallDisabled) config.textProperties.color = UIColor.secondaryLabelColor;
     config.secondaryText = pkg.shortDescription;
-    config.secondaryTextProperties.color = UIColor.secondaryLabelColor;
+    config.secondaryTextProperties.color = pkg.isInstallDisabled ? UIColor.tertiaryLabelColor : UIColor.secondaryLabelColor;
     config.secondaryTextProperties.numberOfLines = 2;
     config.textToSecondaryTextVerticalPadding = 3.0;
     NSDirectionalEdgeInsets m = config.directionalLayoutMargins;
@@ -267,6 +269,11 @@ static NSString * const kGroupByCategoryDefault = @"installer.groupByCategory";
         return [self pillWithText:@"Installed"
                        background:[UIColor colorWithRed:0.16 green:0.55 blue:0.32 alpha:0.18]
                         textColor:[UIColor systemGreenColor]];
+    }
+    if (pkg.isInstallDisabled) {
+        return [self pillWithText:@"BUGGY"
+                       background:[[UIColor systemRedColor] colorWithAlphaComponent:0.16]
+                        textColor:[UIColor systemRedColor]];
     }
     if ([pkg.category caseInsensitiveCompare:@"Beta"] == NSOrderedSame) {
         return [self pillWithText:@"BETA"
@@ -317,6 +324,7 @@ static NSString * const kGroupByCategoryDefault = @"installer.groupByCategory";
     Package *pkg = [self packageAtIndexPath:indexPath];
     PackageQueue *q = [PackageQueue sharedQueue];
     PackageQueueIntent intent = [q intentForPackage:pkg];
+    if (pkg.isInstallDisabled && !pkg.isInstalled && intent == PackageQueueIntentNone) return nil;
 
     NSString *title;
     UIColor *color;

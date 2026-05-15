@@ -37,6 +37,7 @@ NSString * const PackageQueueDidChangeNotification = @"PackageQueueDidChangeNoti
 {
     NSMutableArray<Package *> *out = [self.installs mutableCopy];
     for (Package *p in [PackageCatalog allPackages]) {
+        if (p.isInstallDisabled) continue;
         if (!p.isQueuedForApply) continue;
         if ([self packageInArray:out matching:p]) continue;
         if ([self packageInArray:self.uninstalls matching:p]) continue;
@@ -52,6 +53,7 @@ NSString * const PackageQueueDidChangeNotification = @"PackageQueueDidChangeNoti
 {
     if ([self packageInArray:self.installs matching:package])   return PackageQueueIntentInstall;
     if ([self packageInArray:self.uninstalls matching:package]) return PackageQueueIntentUninstall;
+    if (package.isInstallDisabled) return PackageQueueIntentNone;
     if (package.isQueuedForApply) return PackageQueueIntentInstall;
     return PackageQueueIntentNone;
 }
@@ -71,6 +73,7 @@ NSString * const PackageQueueDidChangeNotification = @"PackageQueueDidChangeNoti
         [self removePackage:package];
         return;
     }
+    if (package.isInstallDisabled && !package.isInstalled) return;
     if (package.isInstalled) {
         [self.uninstalls addObject:package];
     } else {
