@@ -930,6 +930,7 @@ static void settings_prepare_for_respring_sync(void)
     printf("[SETTINGS] preparing for respring cleanup rcReady=%d\n", g_springboard_rc_ready);
     settings_request_all_live_loops_stop("pre-respring cleanup");
     settings_end_statbar_background_task_async("pre-respring cleanup");
+    settings_wait_live_loops_stopped_for_switch("pre-respring cleanup");
 
     @synchronized (settings_rc_lock()) {
         if (g_springboard_rc_ready) {
@@ -967,6 +968,7 @@ static void settings_terminal_kexploit_cleanup_sync_internal(const char *reason)
            g_kexploit_done, g_springboard_rc_ready);
     settings_request_all_live_loops_stop("terminal KRW cleanup");
     settings_end_statbar_background_task_async("terminal KRW cleanup");
+    settings_wait_live_loops_stopped_for_switch("terminal KRW cleanup");
 
     @synchronized (settings_rc_lock()) {
         if (g_springboard_rc_ready) {
@@ -1093,6 +1095,7 @@ void settings_destroy_springboard_remote_call_sync(void)
 {
     settings_request_all_live_loops_stop("remote call sync cleanup");
     settings_end_statbar_background_task_async("remote call sync cleanup");
+    settings_wait_live_loops_stopped_for_switch("remote call sync cleanup");
     @synchronized (settings_rc_lock()) {
         if (g_springboard_rc_ready) {
             axonlite_stop_in_session();
@@ -1108,6 +1111,7 @@ void settings_destroy_springboard_remote_call(void)
     settings_end_statbar_background_task_async("remote call cleanup");
     log_user("[SESSION] Disconnecting from SpringBoard.\n");
     dispatch_async(dispatch_get_global_queue(0, 0), ^{
+        settings_wait_live_loops_stopped_for_switch("remote call cleanup");
         @synchronized (settings_rc_lock()) {
             BOOL hadSession = g_springboard_rc_ready != 0;
             if (g_springboard_rc_ready) {

@@ -681,6 +681,14 @@ void abandon_remote_call(void) {
 }
 
 int destroy_remote_call(void) {
+    if (!remote_call_has_local_state()) {
+        clear_remote_shmem_cache();
+        (void)reap_dead_port_names("destroy_remote_call");
+        g_RC_success = false;
+        g_RC_threadList = [NSMutableArray new];
+        return 0;
+    }
+
     if (g_RC_trojanMem) {
         do_remote_call_stable(100, "munmap", g_RC_trojanMem, PAGE_SIZE, 0, 0, 0, 0, 0, 0);
         g_RC_trojanMem = 0;
@@ -1443,6 +1451,9 @@ void remote_call_with_session(RemoteCallSession *session, void (^block)(void))
 
     RemoteCallState *state = [session remoteCallStatePointer];
     RemoteCallState *previous = remote_call_push_state(state);
-    block();
-    remote_call_pop_state(previous);
+    @try {
+        block();
+    } @finally {
+        remote_call_pop_state(previous);
+    }
 }
