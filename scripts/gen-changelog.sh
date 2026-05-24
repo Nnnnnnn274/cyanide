@@ -24,8 +24,13 @@
 #   CHANGELOG_PENDING_VERSION  e.g. "1.0.32"
 #   CHANGELOG_PENDING_BASE     e.g. "v1.0.31" (commits in BASE..HEAD become the entry)
 #   CHANGELOG_PENDING_MSG      optional extra subject appended after the BASE..HEAD log
-#                              (the about-to-be-made commit message). "Bump …" lines
+#                              (the about-to-be-made commit message). May be multi-line —
+#                              each non-empty line becomes its own bullet. "Bump …" lines
 #                              are filtered the same way as real commits.
+#   CHANGELOG_PENDING_EXTRA    newline-separated additional bullets, emitted BEFORE
+#                              PENDING_MSG. Used by release.sh to inject heuristically
+#                              derived bullets (new tweak files, new packages) so a
+#                              one-line MSG still produces a multi-bullet entry.
 #
 # Invoked from scripts/release.sh before xcodebuild. The output is gitignored —
 # regenerated each release, never committed.
@@ -39,6 +44,7 @@ COUNT="${CHANGELOG_COUNT:-5}"
 PENDING_VERSION="${CHANGELOG_PENDING_VERSION:-}"
 PENDING_BASE="${CHANGELOG_PENDING_BASE:-}"
 PENDING_MSG="${CHANGELOG_PENDING_MSG:-}"
+PENDING_EXTRA="${CHANGELOG_PENDING_EXTRA:-}"
 
 xml_escape() {
     # &  <  >  only — strings inside <string> tags don't need quote escaping.
@@ -119,8 +125,18 @@ trap 'rm -f "$TMP"' EXIT
                 emit_change_line "$SUBJ"
             done < <(git log --reverse --no-merges --pretty=tformat:%s "${PENDING_BASE}..HEAD" 2>/dev/null)
         fi
+        # Auto-derived bullets (from release.sh's dirty-state summarizer)
+        # come before the user's MSG so the granular detail leads, with the
+        # one-line summary trailing as the wrap-up.
+        if [ -n "$PENDING_EXTRA" ]; then
+            while IFS= read -r SUBJ; do
+                emit_change_line "$SUBJ"
+            done <<< "$PENDING_EXTRA"
+        fi
         if [ -n "$PENDING_MSG" ]; then
-            emit_change_line "$PENDING_MSG"
+            while IFS= read -r SUBJ; do
+                emit_change_line "$SUBJ"
+            done <<< "$PENDING_MSG"
         fi
         echo "    </array>"
         echo "  </dict>"

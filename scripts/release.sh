@@ -144,15 +144,76 @@ else
     echo "==> CURRENT_PROJECT_VERSION unchanged at $CURRENT_BUILD_VERSION"
 fi
 
-# 1a. Regenerate Cyanide/Changelog.plist with the new version as the top entry,
+# 1a. Summarize the dirty working tree into extra "What's New" bullets so a
+#     one-line MSG that bundles many changes still produces a multi-bullet
+#     in-app changelog. Heuristics only — fed to gen-changelog.sh and to the
+#     GitHub Release notes default. Override with RELEASE_NO_AUTO_BULLETS=1.
+#
+#     Rules:
+#       - Untracked Cyanide/tweaks/<name>.m       → "Add <Pretty Name> tweak"
+#       - Added `name:@"X"` line in PackageCatalog → "Add X package"
+#     Bullets whose key already appears in MSG (case-insensitive substring)
+#     are dropped so we don't repeat the human's wording.
+compute_extra_bullets() {
+    local msg_lower out base pretty key_lower f name
+    msg_lower=$(printf '%s' "$MSG" | tr '[:upper:]' '[:lower:]')
+    out=""
+
+    while IFS= read -r f; do
+        [ -z "$f" ] && continue
+        base=$(basename "$f" .m)
+        case "$base" in
+            darksword_layout)  pretty="Home Layout Extras" ;;
+            darksword_ota)     pretty="OTA Disabler" ;;
+            darksword_tweaks)  pretty="DarkSword tweaks" ;;
+            killallapps)       continue ;;     # disabled in UI; don't advertise
+            *)                 pretty="$base" ;;
+        esac
+        key_lower=$(printf '%s' "$pretty" | tr '[:upper:]' '[:lower:]')
+        if [ -n "$msg_lower" ] && printf '%s' "$msg_lower" | grep -Fq "$key_lower"; then
+            continue
+        fi
+        out+="Add ${pretty} tweak"$'\n'
+    done < <(git ls-files --others --exclude-standard 2>/dev/null \
+             | grep -E '^Cyanide/tweaks/.*\.m$' || true)
+
+    while IFS= read -r name; do
+        [ -z "$name" ] && continue
+        key_lower=$(printf '%s' "$name" | tr '[:upper:]' '[:lower:]')
+        if [ -n "$msg_lower" ] && printf '%s' "$msg_lower" | grep -Fq "$key_lower"; then
+            continue
+        fi
+        if printf '%s' "$out" | tr '[:upper:]' '[:lower:]' | grep -Fq "$key_lower"; then
+            continue
+        fi
+        out+="Add ${name} package"$'\n'
+    done < <(git diff --no-color -- Cyanide/installer/PackageCatalog.m 2>/dev/null \
+             | grep -E '^\+[[:space:]]+name:@"' \
+             | sed -E 's/^\+[[:space:]]+name:@"([^"]+)".*/\1/' \
+             | head -10)
+
+    printf '%s' "$out"
+}
+
+EXTRA_BULLETS=""
+if [ "$TREE_WAS_DIRTY" = "1" ] && [ -z "${RELEASE_NO_AUTO_BULLETS:-}" ]; then
+    EXTRA_BULLETS="$(compute_extra_bullets)"
+fi
+if [ -n "$EXTRA_BULLETS" ]; then
+    echo "==> auto-derived changelog bullets:"
+    printf '%s' "$EXTRA_BULLETS" | sed 's/^/      - /'
+fi
+
+# 1b. Regenerate Cyanide/Changelog.plist with the new version as the top entry,
 #     so the IPA we're about to build carries its own "What's New" content.
 #     Commits between the last release tag and HEAD become the changes list,
-#     plus the about-to-be-made release commit subject (if any) — pure
-#     "Bump …" lines are filtered as noise inside the generator.
+#     plus the auto-derived EXTRA_BULLETS and the about-to-be-made release
+#     commit subject (if any) — pure "Bump …" lines are filtered as noise.
 LAST_TAG=$(git tag --sort=-v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -n 1 || true)
 CHANGELOG_PENDING_VERSION="$NEW_VERSION" \
 CHANGELOG_PENDING_BASE="$LAST_TAG" \
 CHANGELOG_PENDING_MSG="$MSG" \
+CHANGELOG_PENDING_EXTRA="$EXTRA_BULLETS" \
     ./scripts/gen-changelog.sh \
     || echo "==> changelog generation failed (continuing without it)"
 
@@ -258,12 +319,19 @@ HEAD_SHA=$(git rev-parse HEAD)
 TAG="$EFFECTIVE_TAG"
 SUBJECT=$(git log -1 --pretty=%s)
 
-# Release notes: explicit second arg > NOTES_FILE > NOTES env > commit subject only.
+# Release notes: explicit second arg > NOTES_FILE > NOTES env > commit subject
+# (plus auto-derived dirty-state bullets, if any).
 NOTES_FROM_FILE=""
 if [ -n "${NOTES_FILE:-}" ] && [ -f "${NOTES_FILE}" ]; then
     NOTES_FROM_FILE=$(cat "${NOTES_FILE}")
 fi
-NOTES="${NOTES_ARG:-${NOTES:-${NOTES_FROM_FILE:-$SUBJECT}}}"
+NOTES_DEFAULT="$SUBJECT"
+if [ -n "$EXTRA_BULLETS" ]; then
+    NOTES_DEFAULT="${SUBJECT}
+
+$(printf '%s' "$EXTRA_BULLETS" | sed -e '/^[[:space:]]*$/d' -e 's/^/- /')"
+fi
+NOTES="${NOTES_ARG:-${NOTES:-${NOTES_FROM_FILE:-$NOTES_DEFAULT}}}"
 
 # Pin --repo to the origin push URL so gh doesn't try to create the release
 # on the upstream parent (which it prefers by default for forks).
