@@ -27,8 +27,8 @@ typedef struct {
     char bundle[128];
 } ThemerIconBundleEntry;
 
-static const int    kThemerMaxCache    = 128;
-static const int    kThemerMaxIconBundleCache = 256;
+static const int    kThemerMaxCache    = 512;
+static const int    kThemerMaxIconBundleCache = 512;
 static const size_t kThemerMaxPngBytes = 1 << 18;   // 256 KB hard cap per icon
 static const uint32_t kThemerApplySettleUS = 0;
 static const bool kThemerDetailedIconLogs = false;
@@ -1994,6 +1994,32 @@ bool themer_repaint_dynamic_cached_views_in_session(void)
     return applied > 0;
 }
 
+static NSSet<NSString *> *themer_collect_visible_bundles(void)
+{
+    uint64_t listViewCls = r_class("SBIconListView");
+    uint64_t iconViewCls = r_class("SBIconView");
+    if (!r_is_objc_ptr(listViewCls) || !r_is_objc_ptr(iconViewCls)) return [NSSet set];
+
+    enum { LV_CAP = 64 };
+    uint64_t lvs[LV_CAP];
+    int nlv = sb_collect_views_in_windows(listViewCls, lvs, LV_CAP);
+    if (nlv == 0) return [NSSet set];
+
+    NSMutableSet<NSString *> *bundles = [NSMutableSet set];
+    for (int i = 0; i < nlv; i++) {
+        enum { IV_CAP = 64 };
+        uint64_t ivs[IV_CAP];
+        int n = sb_collect_views(lvs[i], iconViewCls, ivs, IV_CAP);
+        for (int j = 0; j < n; j++) {
+            char bundle[128] = {0};
+            if (themer_read_bundle_for_iconview(ivs[j], bundle, sizeof(bundle)) && bundle[0]) {
+                [bundles addObject:@(bundle)];
+            }
+        }
+    }
+    return bundles;
+}
+
 bool themer_apply_data_in_session(NSDictionary<NSString *, NSData *> *imageDataByBundle)
 {
     if (imageDataByBundle.count == 0) {
@@ -2072,15 +2098,28 @@ bool themer_apply_in_session(const char *themePath)
     }
 
     NSArray<NSString *> *files = [fm contentsOfDirectoryAtPath:themeDir error:NULL];
-    NSMutableDictionary<NSString *, NSData *> *dict = [NSMutableDictionary dictionary];
+    NSMutableDictionary<NSString *, NSString *> *pathByBundle = [NSMutableDictionary dictionary];
     for (NSString *f in files) {
         if (![f.pathExtension.lowercaseString isEqualToString:@"png"]) continue;
-        NSString *full = [themeDir stringByAppendingPathComponent:f];
-        NSData *bytes = [NSData dataWithContentsOfFile:full];
-        if (bytes.length) dict[f.stringByDeletingPathExtension] = bytes;
+        pathByBundle[f.stringByDeletingPathExtension] =
+            [themeDir stringByAppendingPathComponent:f];
     }
-    printf("[THEMER] apply path=%s loaded=%lu\n",
-           themePath, (unsigned long)dict.count);
+    printf("[THEMER] apply path=%s available=%lu\n",
+           themePath, (unsigned long)pathByBundle.count);
+    if (pathByBundle.count == 0) return false;
+
+    NSSet<NSString *> *visible = themer_collect_visible_bundles();
+    NSMutableDictionary<NSString *, NSData *> *dict = [NSMutableDictionary dictionary];
+    for (NSString *bid in visible) {
+        NSString *path = pathByBundle[bid];
+        if (!path) continue;
+        NSData *bytes = [NSData dataWithContentsOfFile:path];
+        if (bytes.length) dict[bid] = bytes;
+    }
+    printf("[THEMER] apply loaded=%lu matched of %lu visible, %lu available\n",
+           (unsigned long)dict.count,
+           (unsigned long)visible.count,
+           (unsigned long)pathByBundle.count);
     return themer_apply_data_in_session(dict);
 }
 
