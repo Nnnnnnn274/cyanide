@@ -4786,7 +4786,7 @@ static _CyanideMailDelegate *_cyanide_mail_delegate(void) {
 
 - (void)openReleasesPage
 {
-    NSURL *url = [NSURL URLWithString:@"https://github.com/zeroxjf/cyanide-ios/releases"];
+    NSURL *url = [NSURL URLWithString:@"https://github.com/zeroxjf/cyanide/releases"];
     if (url) [[UIApplication sharedApplication] openURL:url options:@{} completionHandler:nil];
 }
 

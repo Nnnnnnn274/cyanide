@@ -571,7 +571,7 @@ static NSString * const kFooterID      = @"DocsFooter";
                            @"build/. Sideload, test on device, attach Log-tab output to your "
                            @"PR." },
                @{ @"kind": @"prose",
-                  @"text": @"Source and issues: https://github.com/zeroxjf/cyanide-ios" },
+                  @"text": @"Source and issues: https://github.com/zeroxjf/cyanide" },
            ]},
     ];
 }

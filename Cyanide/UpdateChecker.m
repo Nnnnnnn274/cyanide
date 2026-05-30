@@ -5,7 +5,7 @@
 
 #import "UpdateChecker.h"
 
-static NSString * const kReleasesAPI             = @"https://api.github.com/repos/zeroxjf/cyanide-ios/releases/latest";
+static NSString * const kReleasesAPI             = @"https://api.github.com/repos/zeroxjf/cyanide/releases/latest";
 static NSString * const kUpdateSkippedVersionKey = @"installer.update.skippedVersion";
 static NSString * const kUpdateSnoozeUntilKey    = @"installer.update.snoozeUntil";
 static NSString * const kUpdateLastCheckAtKey    = @"installer.update.lastCheckAt";
