@@ -4,7 +4,7 @@
 
 <h1 align="center">Cyanide</h1>
 
-**By [@zeroxjf](https://github.com/zeroxjf)** — an iOS tweak runner built on top of the DarkSword kernel r/w primitive.
+**By [@zeroxjf](https://github.com/zeroxjf) and [d1y](https://x.com/chenhonzhou)** — an iOS tweak runner built on top of the DarkSword kernel r/w primitive.
 
 Cyanide is a fork of [`wh1te4ever/darksword-kexploit-fun`](https://github.com/wh1te4ever/darksword-kexploit-fun)
 for iOS kernel research. It wraps the native DarkSword kernel stages in an
