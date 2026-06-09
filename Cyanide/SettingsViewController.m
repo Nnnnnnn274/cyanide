@@ -840,7 +840,7 @@ static void settings_note_themer_stage_conflict(BOOL userVisible)
 
 static BOOL settings_location_sim_install_allowed(void)
 {
-    return cyanide_private_tweaks_available() && settings_experimental_tweaks_enabled();
+    return YES;
 }
 
 static BOOL settings_read_screen_awake(void)
@@ -2672,10 +2672,6 @@ BOOL settings_apply_nano_registry_now(BOOL apply)
 
 BOOL settings_apply_call_recording_sound_disabled(BOOL disabled)
 {
-    if (!cyanide_private_tweaks_available()) {
-        log_user("[CALLREC] Failed: private tweak implementation is not present in this build.\n");
-        return NO;
-    }
     if (!settings_ensure_kexploit()) {
         log_user("[CALLREC] Failed: kernel primitives were not acquired. Please try running chain again.\n");
         return NO;
@@ -4535,9 +4531,9 @@ static void settings_schedule_live_apply_for_key(NSString *key)
             return;
         }
         if (!settings_location_sim_install_allowed()) {
-            log_user("[LOCSIM] Target refresh skipped: enable Experimental Tweaks first.\n");
+            log_user("[LOCSIM] Target refresh skipped: Location Simulator is unavailable in this build.\n");
             settings_notify_package_queue_changed_async();
-            settings_post_actions_complete_async(NO, @"Location Simulator unavailable. Enable Experimental Tweaks first.");
+            settings_post_actions_complete_async(NO, @"Location Simulator is unavailable in this build.");
             return;
         }
         if (!g_kexploit_done) {
@@ -5017,8 +5013,6 @@ void settings_register_defaults(void)
             kSettingsRSSIDisplayEnabled,
             kSettingsTypeBannerEnabled,
             kSettingsStageStripEnabled,
-            kSettingsLocationSimEnabled,
-            kSettingsLocationSimStarted,
         ];
         for (NSString *key in privateKeys) {
             if ([defaults boolForKey:key]) {
@@ -5041,9 +5035,6 @@ void settings_register_defaults(void)
         if ([defaults boolForKey:kSettingsStageStripEnabled]) {
             [defaults setBool:NO forKey:kSettingsStageStripEnabled];
         }
-        if ([defaults boolForKey:kSettingsLocationSimEnabled]) {
-            [defaults setBool:NO forKey:kSettingsLocationSimEnabled];
-        }
         [defaults synchronize];
     } else if (![defaults boolForKey:kSettingsExperimentalTweaksEnabled]) {
         BOOL changed = NO;
@@ -5053,10 +5044,6 @@ void settings_register_defaults(void)
         }
         if ([defaults boolForKey:kSettingsTypeBannerEnabled]) {
             [defaults setBool:NO forKey:kSettingsTypeBannerEnabled];
-            changed = YES;
-        }
-        if ([defaults boolForKey:kSettingsLocationSimEnabled]) {
-            [defaults setBool:NO forKey:kSettingsLocationSimEnabled];
             changed = YES;
         }
         if ([defaults boolForKey:kSettingsStageStripEnabled]) {
@@ -6754,9 +6741,7 @@ static _CyanideMailDelegate *_cyanide_mail_delegate(void) {
         @{ @"title": @"TypeBanner",         @"icon": @"ellipsis.bubble.fill",                @"color": [UIColor systemTealColor],   @"section": @(SectionTypeBanner), @"indev": @YES },
 #endif
         @{ @"title": @"Gravity Lite",       @"icon": @"arrow.down.circle.fill",              @"color": [UIColor systemGreenColor],  @"section": @(SectionGravityLite) },
-#if CYANIDE_PRIVATE_TWEAKS_AVAILABLE
-        @{ @"title": @"Location Simulator", @"icon": @"location.fill",                       @"color": [UIColor systemGreenColor],  @"section": @(SectionLocationSim), @"experimental": @YES },
-#endif
+        @{ @"title": @"Location Simulator", @"icon": @"location.fill",                       @"color": [UIColor systemGreenColor],  @"section": @(SectionLocationSim) },
         @{ @"title": @"Cyanide Themer",     @"icon": @"paintpalette.fill",                   @"color": [UIColor systemPinkColor],   @"section": @(SectionThemer) },
         @{ @"title": @"SnowBoard Lite",     @"icon": @"square.stack.3d.up.fill",             @"color": [UIColor systemCyanColor],   @"section": @(SectionSnowBoardLite) },
         @{ @"title": @"LiveWP",             @"icon": @"play.rectangle.fill",                 @"color": [UIColor systemPurpleColor], @"section": @(SectionLiveWP) },
@@ -6966,7 +6951,7 @@ static _CyanideMailDelegate *_cyanide_mail_delegate(void) {
         return @"RemoteCall-only core port of Julio Verne's Gravity. Run applies UIDynamicAnimator gravity, collision, bounce, friction, optional dock physics, and accelerometer steering to SpringBoard icon snapshots. It can restore the icon layout or fire a manual explosion pulse while the SpringBoard session is active.\n\nNot included in this core port: Activator/Home-button hooks, drag gestures, automatic shake effects, and preference-daemon notifications.";
     }
     if (s == SectionLocationSim) {
-        return @"Experimental CoreLocation simulation. Requires Apple Maps installed and set up — Maps is the RemoteCall host process that drives the simulation.\n\nThis is a manual tool, not an installable package. Use Simulate Current Target to start; use Restore Real Location to stop simulation and return CoreLocation to the device's real providers. Each run opens the activity log and marks completion when the request returns.\n\nNot all apps respect the simulated location. Apps that use their own location validation or additional signals may ignore it.\n\nCredits: kolbicz for the RemoteCall/CLSimulationManager GPS spoofer prototype, and ezzuldinSt's LSpoof for picker/route references.\n\nWarning: this can affect more than maps. Location-tied system behavior, including time zone and date/time handling, may behave unexpectedly. Only use this if you know what you're doing.";
+        return @"Beta CoreLocation simulation. Requires Apple Maps installed and set up — Maps is the RemoteCall host process that drives the simulation.\n\nThis is a manual tool, not an installable package. Use Simulate Current Target to start; use Restore Real Location to stop simulation and return CoreLocation to the device's real providers. Each run opens the activity log and marks completion when the request returns.\n\nNot all apps respect the simulated location. Apps that use their own location validation or additional signals may ignore it.\n\nCredits: kolbicz for the RemoteCall/CLSimulationManager GPS spoofer prototype, and ezzuldinSt's LSpoof for picker/route references.\n\nWarning: this can affect more than maps. Location-tied system behavior, including time zone and date/time handling, may behave unexpectedly. Only use this if you know what you're doing.";
     }
     if (s == SectionThemer) {
         return @"Note: Cyanide Themer is still rough around the edges and may be glitchy. It will be iteratively improved to be more stable over time.\n\n"
@@ -8175,8 +8160,8 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls
 
 #if CYANIDE_PRIVATE_TWEAKS_AVAILABLE
     cell.detailTextLabel.text = on
-        ? @"Active — Signal Readouts, TypeBanner, Location Simulator."
-        : @"Signal Readouts, TypeBanner, Location Simulator.";
+        ? @"Active — Signal Readouts, TypeBanner, Dynamic Stage Lite."
+        : @"Signal Readouts, TypeBanner, Dynamic Stage Lite.";
 #else
     cell.detailTextLabel.text = on
         ? @"Active — no private experimental tweaks in this build."
@@ -8237,9 +8222,7 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls
     [d setBool:NO forKey:kSettingsExperimentalTweaksEnabled];
     printf("[SETTINGS] experimental tweaks disabled; disabling gated package states\n");
 
-    // Force-disable every experimental-gated package. Location Simulator keeps
-    // restore as an explicit action because package deactivation is not the
-    // same thing as returning CoreLocation to real providers.
+    // Force-disable every experimental-gated package.
     if ([d boolForKey:kSettingsTypeBannerEnabled]) {
         [d setBool:NO forKey:kSettingsTypeBannerEnabled];
         settings_mark_tweak_applied(kSettingsTypeBannerEnabled, NO);
@@ -8251,11 +8234,6 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls
         settings_mark_tweak_applied(kSettingsRSSIDisplayEnabled, NO);
         settings_notify_package_queue_changed_async();
         settings_schedule_live_apply_for_key(kSettingsRSSIDisplayEnabled);
-    }
-    if ([d boolForKey:kSettingsLocationSimEnabled]) {
-        [d setBool:NO forKey:kSettingsLocationSimEnabled];
-        settings_notify_package_queue_changed_async();
-        settings_schedule_live_apply_for_key(kSettingsLocationSimEnabled);
     }
     if ([d boolForKey:kSettingsStageStripEnabled]) {
         [d setBool:NO forKey:kSettingsStageStripEnabled];
@@ -8277,7 +8255,6 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls
 #pragma mark - Patreon
 
 // Drops any experimental-gated package state if the user is no longer a patron.
-// Location Simulator's restore path remains explicit.
 - (void)teardownExperimentalIfNoLongerPatron
 {
     if (settings_experimental_access_allowed()) return;
@@ -8297,11 +8274,6 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls
         settings_mark_tweak_applied(kSettingsRSSIDisplayEnabled, NO);
         settings_notify_package_queue_changed_async();
         settings_schedule_live_apply_for_key(kSettingsRSSIDisplayEnabled);
-    }
-    if ([d boolForKey:kSettingsLocationSimEnabled]) {
-        [d setBool:NO forKey:kSettingsLocationSimEnabled];
-        settings_notify_package_queue_changed_async();
-        settings_schedule_live_apply_for_key(kSettingsLocationSimEnabled);
     }
     if ([d boolForKey:kSettingsStageStripEnabled]) {
         [d setBool:NO forKey:kSettingsStageStripEnabled];
@@ -9351,7 +9323,7 @@ void cyanide_present_contact(UIViewController *host)
 {
     NSUserDefaults *d = NSUserDefaults.standardUserDefaults;
     if (apply && !settings_location_sim_install_allowed()) {
-        log_user("[LOCSIM] Enable Experimental Tweaks first.\n");
+        log_user("[LOCSIM] Location Simulator is unavailable in this build.\n");
         return;
     }
 
@@ -9430,7 +9402,7 @@ void cyanide_present_contact(UIViewController *host)
 {
     NSUserDefaults *d = NSUserDefaults.standardUserDefaults;
     if (enable && !settings_location_sim_install_allowed()) {
-        log_user("[LOCSIM] Enable Experimental Tweaks first.\n");
+        log_user("[LOCSIM] Location Simulator is unavailable in this build.\n");
         return;
     }
 

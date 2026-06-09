@@ -19,6 +19,11 @@ Avoid vague bullets like "Update settings", "Change project files", or
 
 ## Released
 
+### v1.2.13 - 2026-06-08
+
+- [x] Moved Location Simulator to Beta and into the public app tree so it is available without enabling Experimental Tweaks.
+- [x] Moved Call Recording Sound to Beta and into the public app tree so it is available without enabling Experimental Tweaks.
+
 ### v1.2.12 - 2026-06-08
 
 - [x] Fixed Location Simulator exact coordinate entry so pasted decimal pairs and compass-suffix coordinates are normalized correctly.

@@ -35,7 +35,7 @@ Open this page on your iPhone/iPad and tap one of the buttons below.
 ## Patreon
 
 Early access to experimental tweaks (Dynamic Stage Lite, Signal Readouts,
-TypeBanner, Location Simulator, Call Recording Sound, and future work) is
+TypeBanner, and future work) is
 available to [Patreon supporters](https://www.patreon.com/zeroxjf) at the
 Member tier and above.
 
@@ -109,21 +109,6 @@ Ported from [`kolbicz/DarkSword-Tweaks`](https://github.com/kolbicz/DarkSword-Tw
 - **Watch Pairing Override**: edits the watchOS pairing range stored on the
   iPhone so you can pair a newer Apple Watch or revive an older one. Persists
   across reboots; respring before pairing.
-
-### Experimental
-
-> ⚠︎ Unstable or in-development — require Experimental Tweaks to be enabled in Settings.
->
-> Experimental tweaks ship early to [Patreon supporters](https://www.patreon.com/zeroxjf) before public release.
-
-- **Dynamic Stage Lite**: brings Stage Manager-style split-view to iPhone over
-  RemoteCall — no jailbreak required. Hosts a second app's scene alongside
-  SpringBoard using the same scene-hosting design as [`tomt000`'s Dynamic Stage](https://havoc.app/package/dynamicstage).
-- **Signal Readouts**: replaces the signal-strength glyphs with live numeric
-  readouts — RSRP dBm on cellular, bar count on WiFi.
-- **TypeBanner**: shows a pill banner below the Dynamic Island when the active
-  Messages conversation shows a typing indicator. Detection fires only while
-  Messages.app is running.
 - **Location Simulator**: drives Apple's CoreLocation simulation path from a
   RemoteCall host process and sets a static target coordinate. Simulated
   locations may violate app terms, platform rules, game rules, ride-share or
@@ -147,6 +132,20 @@ Ported from [`kolbicz/DarkSword-Tweaks`](https://github.com/kolbicz/DarkSword-Tw
   Disable Call Recording BookRestore reference tools, and `@Little_34306` as
   credited by the original projects for the Disable Call Recording concept.
 
+### Experimental
+
+> ⚠︎ Unstable or in-development — require Experimental Tweaks to be enabled in Settings.
+>
+> Experimental tweaks ship early to [Patreon supporters](https://www.patreon.com/zeroxjf) before public release.
+
+- **Dynamic Stage Lite**: brings Stage Manager-style split-view to iPhone over
+  RemoteCall — no jailbreak required. Hosts a second app's scene alongside
+  SpringBoard using the same scene-hosting design as [`tomt000`'s Dynamic Stage](https://havoc.app/package/dynamicstage).
+- **Signal Readouts**: replaces the signal-strength glyphs with live numeric
+  readouts — RSRP dBm on cellular, bar count on WiFi.
+- **TypeBanner**: shows a pill banner below the Dynamic Island when the active
+  Messages conversation shows a typing indicator. Detection fires only while
+  Messages.app is running.
 ## Supported Targets
 
 Tested target range:
@@ -239,11 +238,11 @@ from [`d1y/cyanide-ios`](https://github.com/d1y/cyanide-ios) and remain in the
 AGPL-covered public tree.
 
 The `Cyanide/tweaks/private/` submodule points at a separate private
-repository containing the closed-source experimental tweak
-implementations. Those files are
-**All Rights Reserved**, distributed in compiled form only inside
-official Cyanide releases, and gated to active Patreon supporters at the
-Member tier or above. Public clones won't be able to fetch the
-submodule, and the experimental tweaks will be absent from local builds
-unless you re-implement them. The public app target still builds without
-that submodule.
+repository containing closed-source tweak implementations. Those files are
+**All Rights Reserved** and distributed in compiled form only inside official
+Cyanide releases. Experimental entries from that submodule are gated to active
+Patreon supporters at the Member tier or above. Public clones won't be able to
+fetch the submodule, and private-submodule tweaks will be absent from local
+builds unless you re-implement them. Public Beta features, including Location
+Simulator and Call Recording Sound, build from the open-source tree. The public
+app target still builds without that submodule.

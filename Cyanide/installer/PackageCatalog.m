@@ -191,6 +191,7 @@ static const NSInteger kSecGravityLite      = 20;
                                           isNew:YES];
         stageStrip.experimental = YES;
         stageStrip.unstableWarning = @"⚠️ Early development. First Run takes 1-2 minutes because the picker enumerates every installed app and builds a tile per app. Re-Runs are fast. Touch routing into hosted windows isn't wired yet, so scrolling/typing inside a floating window may not work.";
+#endif
 
         Package *locationSim = [[Package alloc] initWithIdentifier:@"com.darksword.locationsim"
                                            name:@"Location Simulator"
@@ -198,15 +199,14 @@ static const NSInteger kSecGravityLite      = 20;
                                 longDescription:@"Spoofs the device's GPS location via Apple's CLSimulationManager. Requires Apple Maps installed and set up — Maps is the RemoteCall host process that drives the simulation.\n\nThis is a manual tool, not an installable package. Open Controls, choose a target, then use Simulate Current Target or Restore Real Location. Each run opens the activity log and marks completion when the request returns. Reset may take a few minutes and may require a reboot plus extra wait time.\n\nSettings exposes the current target plus altitude and accuracy. v1 is static-point only; route playback and alternate daemon hosts are next.\n\nNot all apps respect the simulated location. Apps that use their own location validation or additional signals may ignore it.\n\nCredits: kolbicz provided the GPS spoofer RemoteCall/CLSimulationManager prototype this is based on. ezzuldinSt's LSpoof provided the app-side CLLocationManager spoofing, picker, bookmarks, and route-simulation reference.\n\nSystem-behavior warning: simulated locations can affect more than maps. Features tied to location, including time zone, date/time behavior, weather, automation, reminders, and service checks, may behave unexpectedly. Only use this if you know what you're doing.\n\nLegal and service-use note: simulated locations may violate app terms, platform rules, game rules, ride-share or delivery policies, or local law depending on how they are used. Use only where you have permission. You are responsible for your use and apply or restore this tweak at your own risk."
                                         version:version
                                          author:@"zeroxjf, kolbicz, ezzuldinSt"
-                                       category:@"Experimental"
+                                       category:@"Beta"
                                      symbolName:@"location.fill"
                                            kind:PackageInstallKindDirectTool
                                      enabledKey:nil
                                           isNew:YES];
         locationSim.settingsSection = kSecLocationSim;
-        locationSim.experimental = YES;
-        locationSim.unstableWarning = @"Requires Apple Maps installed and set up. Changes CoreLocation's active simulation state — may affect time zone, date/time, and other location-tied behavior. Some apps and services prohibit or detect simulated locations. Only use this if you know what you're doing.";
-#endif
+        locationSim.experimental = NO;
+        locationSim.unstableWarning = @"Beta: requires Apple Maps installed and set up. Changes CoreLocation's active simulation state — may affect time zone, date/time, and other location-tied behavior. Some apps and services prohibit or detect simulated locations. Only use this if you know what you're doing.";
 
         Package *themer = [[Package alloc] initWithIdentifier:@"com.darksword.themer"
                                            name:@"Cyanide Themer"
@@ -303,21 +303,19 @@ static const NSInteger kSecGravityLite      = 20;
         nanoRegistry.settingsSection = kSecNanoRegistry;
         nanoRegistry.unstableWarning = @"Warning: modifies a local NanoRegistry MobileAsset. Cyanide saves a .cyanide.bak backup beside the original, but system-file edits can fail or require a respring/reboot. Apply or remove this override at your own risk.";
 
-#if CYANIDE_PRIVATE_TWEAKS_AVAILABLE
         Package *callRecordingSound = [[Package alloc] initWithIdentifier:@"com.darksword.callrecording-sound"
                                            name:@"Call Recording Sound"
                                shortDescription:@"Silence disclosure start/stop sounds"
                                 longDescription:@"Replaces the CallServices StartDisclosureWithTone and StopDisclosure audio files with Cyanide's bundled silent payloads.\n\nCredits: YangJiiii (@duongduong0908) for the EnsWilde and Disable Call Recording BookRestore reference tools. @Little_34306 is credited by the original projects for the Disable Call Recording concept. Cyanide port, KRW-backed implementation, and generated replacement silent audio assets by zeroxjf.\n\nSystem-file warning: this modifies files under /var/mobile/Library/CallServices/Greetings/default. Cyanide backs up the first originals into its app container, but system file replacement can fail, partially apply, or require a respring/reboot to settle.\n\nLegal note: call-recording disclosure sounds may exist to satisfy consent, notification, or privacy-law requirements in some places. You are responsible for understanding and following the laws that apply to you.\n\nThis port does not use the old Books/BookRestore/sparserestore path. Cyanide runs KRW, unlocks local /private/var write access, then writes directly to the CallServices files.\n\nUse Restore Original Sounds to write Cyanide's backups back when present. You apply or restore this tweak at your own risk."
                                         version:version
                                          author:@"YangJiiii (@duongduong0908) / zeroxjf"
-                                       category:@"Experimental"
+                                       category:@"Beta"
                                      symbolName:@"speaker.slash.fill"
                                            kind:PackageInstallKindCallRecordingSound
                                      enabledKey:nil
                                           isNew:YES];
-        callRecordingSound.experimental = YES;
-        callRecordingSound.unstableWarning = @"⚠️ Experimental private tweak: persistent CallServices system-file replacement. Disclosure sounds may be legally required where you live; you are responsible for your use and apply this at your own risk. Use Restore Original Sounds before removing Cyanide if you want Cyanide's backups written back.";
-#endif
+        callRecordingSound.experimental = NO;
+        callRecordingSound.unstableWarning = @"Beta: persistent CallServices system-file replacement. Disclosure sounds may be legally required where you live; you are responsible for your use and apply this at your own risk. Use Restore Original Sounds before removing Cyanide if you want Cyanide's backups written back.";
 
         Package *otaBlock = [[Package alloc] initWithIdentifier:@"com.darksword.ota-block"
                                            name:@"OTA Updates"
@@ -421,21 +419,18 @@ static const NSInteger kSecGravityLite      = 20;
 
             otaBlock,
 
-#if CYANIDE_PRIVATE_TWEAKS_AVAILABLE
-            callRecordingSound,
-#endif
-
             // Beta last so the warning sits at the bottom of the Installer.
 #if CYANIDE_PRIVATE_TWEAKS_AVAILABLE
             signal,
 #endif
             axon,
             nanoRegistry,
+            callRecordingSound,
 #if CYANIDE_PRIVATE_TWEAKS_AVAILABLE
             typeBanner,
             stageStrip,
-            locationSim,
 #endif
+            locationSim,
             themer,
             snowboardLite,
             liveWP,
