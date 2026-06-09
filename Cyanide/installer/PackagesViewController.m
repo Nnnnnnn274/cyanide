@@ -41,6 +41,26 @@ static NSString * const kGitHubIssuesURL        = @"https://github.com/zeroxjf/c
            ![SettingsViewController liveWPHasSelectedVideo];
 }
 
+- (BOOL)presentQueueConflictIfNeededForPackage:(Package *)pkg intent:(PackageQueueIntent)intent
+{
+    NSString *reason = nil;
+    if ([[PackageQueue sharedQueue] canQueueIntent:intent
+                                       forPackage:pkg
+                                           reason:&reason]) {
+        return NO;
+    }
+
+    UIAlertController *alert =
+        [UIAlertController alertControllerWithTitle:@"Run Hide Home Bar Alone"
+                                            message:reason ?: @"Hide Home Bar must be the only pending queue item."
+                                     preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:@"OK"
+                                              style:UIAlertActionStyleDefault
+                                            handler:nil]];
+    [self presentViewController:alert animated:YES completion:nil];
+    return YES;
+}
+
 - (void)viewDidLoad
 {
     [super viewDidLoad];
@@ -624,6 +644,18 @@ static NSString * const kGitHubIssuesURL        = @"https://github.com/zeroxjf/c
                        background:[UIColor.secondaryLabelColor colorWithAlphaComponent:0.14]
                         textColor:UIColor.secondaryLabelColor];
     }
+    if (pkg.kind == PackageInstallKindHideHomeBar) {
+        if (intent != PackageQueueIntentNone) {
+            NSString *text = (intent == PackageQueueIntentInstall) ? @"HIDE PENDING" : @"RESTORE PENDING";
+            UIColor *color = self.view.tintColor;
+            return [self pillWithText:text
+                           background:[color colorWithAlphaComponent:0.18]
+                            textColor:color];
+        }
+        return [self pillWithText:@"MANUAL"
+                       background:[UIColor.secondaryLabelColor colorWithAlphaComponent:0.14]
+                        textColor:UIColor.secondaryLabelColor];
+    }
     if (intent != PackageQueueIntentNone) {
         NSString *text = (intent == PackageQueueIntentInstall) ? @"WILL ACTIVATE" : @"WILL DEACTIVATE";
         UIColor *color = self.view.tintColor;
@@ -722,6 +754,10 @@ static NSString * const kGitHubIssuesURL        = @"https://github.com/zeroxjf/c
             contextualActionWithStyle:UIContextualActionStyleDestructive
                                 title:@"Disable"
                               handler:^(UIContextualAction *a, UIView *v, void (^done)(BOOL)) {
+            if ([self presentQueueConflictIfNeededForPackage:pkg intent:PackageQueueIntentInstall]) {
+                done(YES);
+                return;
+            }
             [q queueIntent:PackageQueueIntentInstall forPackage:pkg];
             done(YES);
         }];
@@ -747,6 +783,10 @@ static NSString * const kGitHubIssuesURL        = @"https://github.com/zeroxjf/c
             contextualActionWithStyle:UIContextualActionStyleNormal
                                 title:@"Apply"
                               handler:^(UIContextualAction *a, UIView *v, void (^done)(BOOL)) {
+            if ([self presentQueueConflictIfNeededForPackage:pkg intent:PackageQueueIntentInstall]) {
+                done(YES);
+                return;
+            }
             [q queueIntent:PackageQueueIntentInstall forPackage:pkg];
             done(YES);
         }];
@@ -776,6 +816,7 @@ static NSString * const kGitHubIssuesURL        = @"https://github.com/zeroxjf/c
             [PackageDetailViewController
                 presentCallRecordingDisclosureIfNeededFromViewController:self
                                                           confirmHandler:^{
+                if ([self presentQueueConflictIfNeededForPackage:pkg intent:PackageQueueIntentInstall]) return;
                 [q queueIntent:PackageQueueIntentInstall forPackage:pkg];
             }];
         }];
@@ -792,6 +833,35 @@ static NSString * const kGitHubIssuesURL        = @"https://github.com/zeroxjf/c
         restore.image = [UIImage systemImageNamed:@"speaker.wave.2.fill"];
 
         UISwipeActionsConfiguration *cfg = [UISwipeActionsConfiguration configurationWithActions:@[silence, restore]];
+        cfg.performsFirstActionWithFullSwipe = NO;
+        return cfg;
+    }
+
+    if (pkg.kind == PackageInstallKindHideHomeBar && intent == PackageQueueIntentNone) {
+        UIContextualAction *hide = [UIContextualAction
+            contextualActionWithStyle:UIContextualActionStyleDestructive
+                                title:@"Hide"
+                              handler:^(UIContextualAction *a, UIView *v, void (^done)(BOOL)) {
+            if ([self presentQueueConflictIfNeededForPackage:pkg intent:PackageQueueIntentInstall]) {
+                done(YES);
+                return;
+            }
+            [q queueIntent:PackageQueueIntentInstall forPackage:pkg];
+            done(YES);
+        }];
+        hide.image = [UIImage systemImageNamed:@"line.3.horizontal"];
+
+        UIContextualAction *restore = [UIContextualAction
+            contextualActionWithStyle:UIContextualActionStyleNormal
+                                title:@"Restore"
+                              handler:^(UIContextualAction *a, UIView *v, void (^done)(BOOL)) {
+            [q queueIntent:PackageQueueIntentUninstall forPackage:pkg];
+            done(YES);
+        }];
+        restore.backgroundColor = UIColor.systemGreenColor;
+        restore.image = [UIImage systemImageNamed:@"arrow.clockwise"];
+
+        UISwipeActionsConfiguration *cfg = [UISwipeActionsConfiguration configurationWithActions:@[hide, restore]];
         cfg.performsFirstActionWithFullSwipe = NO;
         return cfg;
     }
@@ -839,6 +909,10 @@ static NSString * const kGitHubIssuesURL        = @"https://github.com/zeroxjf/c
         if (isInstall && [self packageNeedsLiveWPVideoBeforeInstall:pkg]) {
             done(YES);
             [self navigateToSettingsSectionForPackage:pkg];
+            return;
+        }
+        if (isInstall && [self presentQueueConflictIfNeededForPackage:pkg intent:PackageQueueIntentInstall]) {
+            done(YES);
             return;
         }
         [q toggleForPackage:pkg];
@@ -910,6 +984,7 @@ static NSString * const kGitHubIssuesURL        = @"https://github.com/zeroxjf/c
     [alert addAction:[UIAlertAction actionWithTitle:@"Activate Anyway"
                                              style:UIAlertActionStyleDefault
                                            handler:^(UIAlertAction *_) {
+        if ([self presentQueueConflictIfNeededForPackage:pkg intent:PackageQueueIntentInstall]) return;
         [[PackageQueue sharedQueue] toggleForPackage:pkg];
     }]];
     [alert addAction:[UIAlertAction actionWithTitle:@"Cancel"

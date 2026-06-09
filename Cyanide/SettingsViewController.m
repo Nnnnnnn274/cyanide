@@ -23,6 +23,7 @@
 #import "tweaks/livewp.h"
 #import "tweaks/gravitylite.h"
 #import "tweaks/appswitchergrid.h"
+#import "tweaks/hide_home_bar.h"
 #import <CoreMotion/CoreMotion.h>
 
 #import <objc/runtime.h>
@@ -45,6 +46,7 @@
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 #import <notify.h>
 #import <math.h>
+#import <sys/sysctl.h>
 #import <sys/utsname.h>
 #import <time.h>
 #import <unistd.h>
@@ -205,6 +207,7 @@ NSString * const kSettingsAxonLiteEnabled = @"AxonLiteEnabled";
 NSString * const kSettingsTypeBannerEnabled = @"TypeBannerEnabled";
 NSString * const kSettingsNotificationIslandEnabled = @"NotificationIslandEnabled";
 NSString * const kSettingsAppSwitcherGridEnabled = @"AppSwitcherGridEnabled";
+static NSString * const kSettingsHideHomeBarMaterialKitBootTime = @"HideHomeBarMaterialKitBootTime";
 
 NSString * const kSettingsGravityLiteEnabled = @"GravityLiteEnabled";
 NSString * const kSettingsGravityLiteDockEnabled = @"GravityLiteDockEnabled";
@@ -223,6 +226,15 @@ NSString * const kSettingsLocationSimAltitude = @"LocationSimAltitude";
 NSString * const kSettingsLocationSimHorizontalAccuracy = @"LocationSimHorizontalAccuracy";
 NSString * const kSettingsLocationSimHostProcess = @"LocationSimHostProcess";
 static NSString * const kSettingsLocationSimStarted = @"LocationSimStarted";
+
+static NSString * const kSettingsIPADecryptorTargetBundleID = @"IPADecryptorTargetBundleID";
+static NSString * const kSettingsIPADecryptorAppStoreInput = @"IPADecryptorAppStoreInput";
+static NSString * const kSettingsIPADecryptorAppStoreID = @"IPADecryptorAppStoreID";
+static NSString * const kSettingsIPADecryptorAppStoreName = @"IPADecryptorAppStoreName";
+static NSString * const kSettingsIPADecryptorAppStoreVersion = @"IPADecryptorAppStoreVersion";
+static NSString * const kSettingsIPADecryptorAppStoreURL = @"IPADecryptorAppStoreURL";
+static NSString * const kSettingsIPADecryptorDownloadedIPAPath = @"IPADecryptorDownloadedIPAPath";
+static NSString * const kSettingsIPADecryptorDownloadStatus = @"IPADecryptorDownloadStatus";
 
 NSString * const kSettingsThemerEnabled = @"ThemerEnabled";
 NSString * const kSettingsThemerThemeID = @"ThemerThemeID";
@@ -2140,6 +2152,87 @@ static BOOL settings_enabled_tweak_should_run(NSUserDefaults *d, NSString *key, 
     return !pendingOnly || !settings_tweak_is_applied(key);
 }
 
+static NSTimeInterval settings_current_boot_epoch_seconds(void)
+{
+    struct timeval boottime;
+    size_t len = sizeof(boottime);
+    memset(&boottime, 0, sizeof(boottime));
+    if (sysctlbyname("kern.boottime", &boottime, &len, NULL, 0) == 0 &&
+        boottime.tv_sec > 0) {
+        return (NSTimeInterval)boottime.tv_sec;
+    }
+
+    return [[NSDate date] timeIntervalSince1970] -
+           [[NSProcessInfo processInfo] systemUptime];
+}
+
+static BOOL settings_hide_home_bar_materialkit_zero_active(NSUserDefaults *d)
+{
+    NSTimeInterval storedBoot = [d doubleForKey:kSettingsHideHomeBarMaterialKitBootTime];
+    if (storedBoot <= 0.0) return NO;
+
+    NSTimeInterval currentBoot = settings_current_boot_epoch_seconds();
+    if (currentBoot <= 0.0) return YES;
+    if (fabs(currentBoot - storedBoot) > 120.0) {
+        // The MaterialKit page zero is memory-backed/transient; a reboot
+        // restores the asset catalog, so stale conflict state can be dropped.
+        [d removeObjectForKey:kSettingsHideHomeBarMaterialKitBootTime];
+        [d synchronize];
+        return NO;
+    }
+    return YES;
+}
+
+static void settings_note_hide_home_bar_materialkit_zero_active(NSUserDefaults *d)
+{
+    [d setDouble:settings_current_boot_epoch_seconds()
+          forKey:kSettingsHideHomeBarMaterialKitBootTime];
+    [d synchronize];
+}
+
+BOOL settings_hide_home_bar_respring_pending(void)
+{
+    return settings_hide_home_bar_materialkit_zero_active(NSUserDefaults.standardUserDefaults);
+}
+
+void settings_present_hide_home_bar_respring_prompt(UIViewController *host)
+{
+    UIAlertController *ac = [UIAlertController
+        alertControllerWithTitle:@"Respring to Hide Home Bar?"
+                         message:@"Hide Home Bar was applied, but SpringBoard needs to restart before the home indicator disappears."
+                  preferredStyle:UIAlertControllerStyleAlert];
+    [ac addAction:[UIAlertAction actionWithTitle:@"Later"
+                                           style:UIAlertActionStyleCancel
+                                         handler:nil]];
+    __weak UIViewController *weakHost = host;
+    [ac addAction:[UIAlertAction actionWithTitle:@"Respring"
+                                           style:UIAlertActionStyleDestructive
+                                         handler:^(UIAlertAction *_) {
+        dispatch_async(dispatch_get_global_queue(0, 0), ^{
+            if (__sync_lock_test_and_set(&g_settings_actions_running, 1)) {
+                printf("[SETTINGS] hide home bar respring blocked: actions already running\n");
+                log_user("[RESPRING] Another action is still running. Try Respring again in a moment.\n");
+                return;
+            }
+
+            __sync_lock_test_and_set(&g_settings_respring_cleanup_running, 1);
+            settings_notify_cleanup_state_changed();
+            @try {
+                settings_prepare_for_respring_sync();
+            } @finally {
+                __sync_lock_release(&g_settings_actions_running);
+                __sync_lock_release(&g_settings_respring_cleanup_running);
+                settings_notify_cleanup_state_changed();
+            }
+
+            dispatch_async(dispatch_get_main_queue(), ^{
+                settings_show_respring_overlay(weakHost);
+            });
+        });
+    }]];
+    settings_present_controller(ac, host);
+}
+
 static BOOL settings_dark_tweaks_should_run(NSUserDefaults *d, BOOL pendingOnly)
 {
     NSArray<NSString *> *keys = @[
@@ -2742,6 +2835,30 @@ BOOL settings_apply_call_recording_sound_disabled(BOOL disabled)
             return NO;
         }
         return call_recording_sound_set_disabled(disabled) ? YES : NO;
+    } @finally {
+        settings_release_actions_lock();
+    }
+}
+
+BOOL settings_apply_hide_home_bar_hidden(BOOL hidden)
+{
+    if (!settings_try_claim_actions_lock("Hide Home Bar apply",
+                                         "[HOME BAR] Another action is already running.")) {
+        return NO;
+    }
+
+    @try {
+        if (!hidden) {
+            return hide_home_bar_restore() ? YES : NO;
+        }
+        NSUserDefaults *d = [NSUserDefaults standardUserDefaults];
+        if (!settings_ensure_kexploit()) {
+            log_user("[HOME BAR] Failed: kernel primitives were not acquired. Please try running chain again.\n");
+            return NO;
+        }
+        BOOL ok = hide_home_bar_apply() ? YES : NO;
+        if (ok) settings_note_hide_home_bar_materialkit_zero_active(d);
+        return ok;
     } @finally {
         settings_release_actions_lock();
     }
@@ -4704,6 +4821,33 @@ static NSString *settings_location_sim_mode_summary(NSUserDefaults *d)
             settings_location_sim_target_summary(d)];
 }
 
+static NSString *settings_ipadecryptor_target_summary(NSUserDefaults *d)
+{
+    NSString *bundleID = [d stringForKey:kSettingsIPADecryptorTargetBundleID];
+    if (bundleID.length == 0) {
+        return @"None selected. Choose an installed app first.";
+    }
+    return ipadecryptor_display_name_for_bundle(bundleID);
+}
+
+static NSString *settings_ipadecryptor_app_store_summary(NSUserDefaults *d)
+{
+    NSString *appID = [d stringForKey:kSettingsIPADecryptorAppStoreID];
+    NSString *name = [d stringForKey:kSettingsIPADecryptorAppStoreName];
+    NSString *version = [d stringForKey:kSettingsIPADecryptorAppStoreVersion];
+    NSString *url = [d stringForKey:kSettingsIPADecryptorAppStoreURL];
+    if (appID.length == 0 && url.length == 0) {
+        return @"None. Paste an App Store link or numeric app ID.";
+    }
+    if (name.length > 0) {
+        return [NSString stringWithFormat:@"%@%@%@",
+                name,
+                version.length > 0 ? @" " : @"",
+                version.length > 0 ? version : @""];
+    }
+    return appID.length > 0 ? [NSString stringWithFormat:@"App Store ID %@", appID] : url;
+}
+
 static BOOL settings_apply_location_sim_from_defaults_locked(NSUserDefaults *d)
 {
     NSInteger accuracy = [d integerForKey:kSettingsLocationSimHorizontalAccuracy];
@@ -5346,6 +5490,14 @@ void settings_register_defaults(void)
         kSettingsLocationSimHorizontalAccuracy: @(kLocationSimDefaultAccuracy),
         kSettingsLocationSimHostProcess: @"Maps",
         kSettingsLocationSimStarted: @NO,
+        kSettingsIPADecryptorTargetBundleID: @"",
+        kSettingsIPADecryptorAppStoreInput: @"",
+        kSettingsIPADecryptorAppStoreID: @"",
+        kSettingsIPADecryptorAppStoreName: @"",
+        kSettingsIPADecryptorAppStoreVersion: @"",
+        kSettingsIPADecryptorAppStoreURL: @"",
+        kSettingsIPADecryptorDownloadedIPAPath: @"",
+        kSettingsIPADecryptorDownloadStatus: @"Not started.",
 
         kSettingsThemerEnabled: @NO,
         kSettingsThemerThemeID: kThemerThemeNone,
@@ -6042,6 +6194,7 @@ typedef NS_ENUM(NSInteger, SettingsSection) {
     SectionLocationSim,
     SectionGravityLite,
     SectionAppSwitcherGrid,
+    SectionIPADecryptor,
     SectionCount,
 };
 
@@ -6978,6 +7131,74 @@ static _CyanideMailDelegate *_cyanide_mail_delegate(void) {
     ];
 }
 
+- (NSArray<NSDictionary *> *)ipaDecryptorRows
+{
+    NSUserDefaults *d = NSUserDefaults.standardUserDefaults;
+    NSString *bundleID = [d stringForKey:kSettingsIPADecryptorTargetBundleID] ?: @"";
+    NSString *appStoreInput = [d stringForKey:kSettingsIPADecryptorAppStoreInput] ?: @"";
+    NSString *downloadedPath = [d stringForKey:kSettingsIPADecryptorDownloadedIPAPath] ?: @"";
+    NSMutableArray<NSDictionary *> *rows = [NSMutableArray arrayWithArray:@[
+        @{ @"kind": @"info",
+           @"title": @"App Store Account",
+           @"subtitle": ipadecryptor_app_store_account_summary() },
+        @{ @"kind": @"button",
+           @"title": ipadecryptor_has_app_store_account()
+                ? @"Sign In Again…"
+                : @"Sign In to App Store…",
+           @"subtitle": @"Required before Cyanide can request an authenticated IPA download ticket. 2FA is requested after Apple asks for it.",
+           @"action": @"ipadec-signin" },
+        @{ @"kind": @"info",
+           @"title": @"Selected App",
+           @"subtitle": settings_ipadecryptor_target_summary(d) },
+        @{ @"kind": @"info",
+           @"title": @"App Store Link",
+           @"subtitle": settings_ipadecryptor_app_store_summary(d) },
+        @{ @"kind": @"info",
+           @"title": @"Download Status",
+           @"subtitle": [d stringForKey:kSettingsIPADecryptorDownloadStatus] ?: @"Not started." },
+        @{ @"kind": @"info",
+           @"title": @"Output Folder",
+           @"subtitle": ipadecryptor_default_output_directory().length > 0
+                ? ipadecryptor_default_output_directory()
+                : @"Cyanide Documents/DecryptedIPAs" },
+        @{ @"kind": @"button",
+           @"title": @"Choose Installed App…",
+           @"action": @"ipadec-choose" },
+        @{ @"kind": @"button",
+           @"title": @"Paste App Store Link & Download…",
+           @"subtitle": @"Resolves the link, then starts the IPA download path.",
+           @"action": @"ipadec-paste-link" },
+    ]];
+    if (appStoreInput.length > 0) {
+        [rows addObject:@{ @"kind": @"button",
+                           @"title": @"Download IPA from App Store",
+                           @"subtitle": @"Requests an authenticated download ticket, then fetches the encrypted IPA to Documents.",
+                           @"action": @"ipadec-download" }];
+    }
+    if (ipadecryptor_has_app_store_account()) {
+        [rows addObject:@{ @"kind": @"button",
+                           @"title": @"Clear Saved App Store Token",
+                           @"action": @"ipadec-clear-account",
+                           @"destructive": @YES }];
+    }
+    if (downloadedPath.length > 0) {
+        [rows addObject:@{ @"kind": @"info",
+                           @"title": @"Downloaded IPA",
+                           @"subtitle": downloadedPath }];
+    }
+    if (bundleID.length > 0) {
+        [rows addObject:@{ @"kind": @"button",
+                           @"title": @"Probe Target",
+                           @"subtitle": @"Reads the app bundle and reports the main Mach-O FairPlay encryption command.",
+                           @"action": @"ipadec-probe" }];
+        [rows addObject:@{ @"kind": @"button",
+                           @"title": @"Start Decrypt",
+                           @"subtitle": @"Runs the in-dev pipeline. Dump and IPA writer stages are still being wired.",
+                           @"action": @"ipadec-start" }];
+    }
+    return rows;
+}
+
 - (NSArray<NSDictionary *> *)themerRows
 {
     BOOL hasSelection = settings_themer_has_selected_theme();
@@ -7059,6 +7280,9 @@ static _CyanideMailDelegate *_cyanide_mail_delegate(void) {
         @{ @"kind": @"info",
            @"title": applied ? @"Current Style: Grid" : @"Current Style: Stock",
            @"subtitle": @"This is a runtime SpringBoard method patch. It does not write system files; respring restores the stock app switcher." },
+        @{ @"kind": @"info",
+           @"title": @"Session note",
+           @"subtitle": @"If you respring after Hide Home Bar, run App Switcher Grid again because respring resets this live SpringBoard patch." },
         @{ @"kind": @"button",
            @"title": @"Restore Stock Switcher",
            @"subtitle": @"Restores the original switcher style in the active SpringBoard session when available.",
@@ -7127,6 +7351,9 @@ static _CyanideMailDelegate *_cyanide_mail_delegate(void) {
         [out addObject:@{@"title": @"Video", @"value": settings_livewp_video_detail()}];
     } else if (section == SectionLocationSim) {
         [out addObject:@{@"title": @"Target", @"value": settings_location_sim_target_summary(d)}];
+    } else if (section == SectionIPADecryptor) {
+        [out addObject:@{@"title": @"Target", @"value": settings_ipadecryptor_target_summary(d)}];
+        [out addObject:@{@"title": @"App Store", @"value": settings_ipadecryptor_app_store_summary(d)}];
     } else if (section == SectionGravityLite) {
         [out addObject:@{@"title": @"Dock",         @"value": [d boolForKey:kSettingsGravityLiteDockEnabled] ? @"Included" : @"Home only"}];
         [out addObject:@{@"title": @"Strength",     @"value": [NSString stringWithFormat:@"%ld%%", (long)[d integerForKey:kSettingsGravityLiteMagnitudePct]]}];
@@ -7160,6 +7387,7 @@ static _CyanideMailDelegate *_cyanide_mail_delegate(void) {
         case SectionAppSwitcherGrid: return self.appSwitcherGridRows;
         case SectionGravityLite: return self.gravityLiteRows;
         case SectionLocationSim: return self.locationSimRows;
+        case SectionIPADecryptor: return self.ipaDecryptorRows;
         case SectionSnowBoardLite: return self.snowboardLiteRows;
         case SectionLiveWP: return self.liveWPRows;
         default: return @[];
@@ -7187,6 +7415,7 @@ static _CyanideMailDelegate *_cyanide_mail_delegate(void) {
 #if CYANIDE_PRIVATE_TWEAKS_AVAILABLE
         @{ @"title": @"TypeBanner",         @"icon": @"ellipsis.bubble.fill",                @"color": [UIColor systemTealColor],   @"section": @(SectionTypeBanner), @"indev": @YES },
         @{ @"title": @"Notification Island", @"icon": @"bell.and.waves.left.and.right.fill",  @"color": [UIColor systemOrangeColor], @"section": @(SectionNotificationIsland), @"indev": @YES },
+        @{ @"title": @"IPA Decryptor",      @"icon": @"lock.open.fill",                      @"color": [UIColor systemPurpleColor], @"section": @(SectionIPADecryptor), @"indev": @YES },
 #endif
         @{ @"title": @"Gravity Lite",       @"icon": @"arrow.down.circle.fill",              @"color": [UIColor systemGreenColor],  @"section": @(SectionGravityLite) },
         @{ @"title": @"App Switcher Grid",  @"icon": @"square.grid.2x2.fill",                @"color": [UIColor systemOrangeColor], @"section": @(SectionAppSwitcherGrid) },
@@ -7406,6 +7635,9 @@ static _CyanideMailDelegate *_cyanide_mail_delegate(void) {
     }
     if (s == SectionLocationSim) {
         return @"Beta CoreLocation simulation. Requires Apple Maps installed and set up — Maps is the RemoteCall host process that drives the simulation.\n\nThis is a manual tool, not an installable package. Use Simulate Current Target to start; use Restore Real Location to stop simulation and return CoreLocation to the device's real providers. Each run opens the activity log and marks completion when the request returns.\n\nNot all apps respect the simulated location. Apps that use their own location validation or additional signals may ignore it.\n\nCredits: kolbicz for the RemoteCall/CLSimulationManager GPS spoofer prototype, and ezzuldinSt's LSpoof for picker/route references.\n\nWarning: this can affect more than maps. Location-tied system behavior, including time zone and date/time handling, may behave unexpectedly. Only use this if you know what you're doing.";
+    }
+    if (s == SectionIPADecryptor) {
+        return @"In-development local IPA decryptor. Current build discovers installed user apps, resolves pasted App Store links to bundle IDs, signs in for an App Store download token, and fetches the encrypted IPA to Documents. The fetched IPA still needs SINF/iTunesMetadata patching plus the KRW dump/rebuild stage before it becomes a decrypted IPA.";
     }
     if (s == SectionThemer) {
         return @"Legacy icon theme engine settings.\n\n"
@@ -9848,6 +10080,424 @@ void cyanide_present_contact(UIViewController *host)
                                                         object:[PackageQueue sharedQueue]];
 }
 
+- (void)reloadIPADecryptorUI
+{
+    [self reloadSectionOrAll:SectionIPADecryptor];
+    [[NSNotificationCenter defaultCenter] postNotificationName:PackageQueueDidChangeNotification
+                                                        object:[PackageQueue sharedQueue]];
+}
+
+- (void)presentIPADecryptorAppPicker
+{
+    NSArray<NSDictionary<NSString *, NSString *> *> *apps = ipadecryptor_installed_apps();
+    if (apps.count == 0) {
+        UIAlertController *ac = [UIAlertController
+            alertControllerWithTitle:@"No Apps Found"
+                             message:@"Cyanide could not list installed user apps yet. Run the chain once, then try again."
+                      preferredStyle:UIAlertControllerStyleAlert];
+        [ac addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
+        settings_present_controller(ac, self);
+        return;
+    }
+
+    UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"Choose App"
+                                                                message:@"Select the installed app to probe/decrypt."
+                                                         preferredStyle:UIAlertControllerStyleActionSheet];
+    __weak typeof(self) weakSelf = self;
+    NSUInteger shown = 0;
+    for (NSDictionary<NSString *, NSString *> *app in apps) {
+        if (shown >= 60) break;
+        NSString *bundleID = app[@"bundleID"];
+        if (bundleID.length == 0) continue;
+        NSString *name = app[@"name"].length > 0 ? app[@"name"] : bundleID;
+        NSString *title = name;
+        if (![name isEqualToString:bundleID]) {
+            title = [NSString stringWithFormat:@"%@ — %@", name, bundleID];
+        }
+        [ac addAction:[UIAlertAction actionWithTitle:title
+                                               style:UIAlertActionStyleDefault
+                                             handler:^(__unused UIAlertAction *action) {
+            __strong typeof(weakSelf) strongSelf = weakSelf;
+            if (!strongSelf) return;
+            NSUserDefaults *d = NSUserDefaults.standardUserDefaults;
+            [d setObject:bundleID forKey:kSettingsIPADecryptorTargetBundleID];
+            [d synchronize];
+            log_user("[IPADEC] Selected %s (%s)\n", name.UTF8String, bundleID.UTF8String);
+            [strongSelf reloadIPADecryptorUI];
+        }]];
+        shown++;
+    }
+    if (apps.count > shown) {
+        [ac addAction:[UIAlertAction actionWithTitle:[NSString stringWithFormat:@"%lu more hidden — refine picker later",
+                                                                             (unsigned long)(apps.count - shown)]
+                                               style:UIAlertActionStyleDefault
+                                             handler:nil]];
+    }
+    [ac addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+    ac.popoverPresentationController.sourceView = self.view;
+    ac.popoverPresentationController.sourceRect = self.view.bounds;
+    settings_present_controller(ac, self);
+}
+
+- (void)saveIPADecryptorAppStoreMetadata:(NSDictionary<NSString *, NSString *> *)meta
+                                   input:(NSString *)input
+{
+    if (meta.count == 0) return;
+    NSUserDefaults *d = NSUserDefaults.standardUserDefaults;
+    NSString *bundleID = meta[@"bundleID"] ?: @"";
+    [d setObject:input ?: @"" forKey:kSettingsIPADecryptorAppStoreInput];
+    [d setObject:meta[@"appStoreID"] ?: @"" forKey:kSettingsIPADecryptorAppStoreID];
+    [d setObject:meta[@"name"] ?: @"" forKey:kSettingsIPADecryptorAppStoreName];
+    [d setObject:meta[@"version"] ?: @"" forKey:kSettingsIPADecryptorAppStoreVersion];
+    [d setObject:meta[@"trackURL"] ?: @"" forKey:kSettingsIPADecryptorAppStoreURL];
+    [d setObject:@"" forKey:kSettingsIPADecryptorDownloadedIPAPath];
+    [d setObject:@"Resolved App Store metadata. Download not started yet."
+          forKey:kSettingsIPADecryptorDownloadStatus];
+    if (bundleID.length > 0) {
+        [d setObject:bundleID forKey:kSettingsIPADecryptorTargetBundleID];
+    }
+    [d synchronize];
+}
+
+- (void)saveIPADecryptorDownloadStatus:(NSString *)status
+                         downloadedIPA:(NSString *)downloadedPath
+{
+    NSUserDefaults *d = NSUserDefaults.standardUserDefaults;
+    [d setObject:status.length > 0 ? status : @"Download status unavailable."
+          forKey:kSettingsIPADecryptorDownloadStatus];
+    if (downloadedPath.length > 0) {
+        [d setObject:downloadedPath forKey:kSettingsIPADecryptorDownloadedIPAPath];
+    }
+    [d synchronize];
+}
+
+- (void)presentIPADecryptorSignInPrompt
+{
+    UIAlertController *ac = [UIAlertController
+        alertControllerWithTitle:@"App Store Sign In"
+                         message:@"Sign in with the Apple ID that owns or can download the app. If Apple asks for two-factor authentication, Cyanide will prompt for the code next."
+                  preferredStyle:UIAlertControllerStyleAlert];
+    [ac addTextFieldWithConfigurationHandler:^(UITextField *field) {
+        field.placeholder = @"Apple ID email";
+        field.keyboardType = UIKeyboardTypeEmailAddress;
+        field.autocapitalizationType = UITextAutocapitalizationTypeNone;
+        field.autocorrectionType = UITextAutocorrectionTypeNo;
+        field.clearButtonMode = UITextFieldViewModeWhileEditing;
+    }];
+    [ac addTextFieldWithConfigurationHandler:^(UITextField *field) {
+        field.placeholder = @"Password";
+        field.secureTextEntry = YES;
+        field.autocapitalizationType = UITextAutocapitalizationTypeNone;
+        field.autocorrectionType = UITextAutocorrectionTypeNo;
+        field.clearButtonMode = UITextFieldViewModeWhileEditing;
+    }];
+    __weak typeof(self) weakSelf = self;
+    [ac addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+    [ac addAction:[UIAlertAction actionWithTitle:@"Sign In"
+                                           style:UIAlertActionStyleDefault
+                                         handler:^(__unused UIAlertAction *action) {
+        __strong typeof(weakSelf) strongSelf = weakSelf;
+        [strongSelf runIPADecryptorSignInEmail:ac.textFields[0].text
+                                      password:ac.textFields[1].text
+                                      authCode:nil];
+    }]];
+    settings_present_controller(ac, self);
+}
+
+- (void)presentIPADecryptorTwoFactorPromptForEmail:(NSString *)email
+                                          password:(NSString *)password
+{
+    NSString *trimmedEmail = [email ?: @"" stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    NSString *shownEmail = trimmedEmail.length > 0 ? trimmedEmail : @"this Apple ID";
+    UIAlertController *ac = [UIAlertController
+        alertControllerWithTitle:@"Two-Factor Code"
+                         message:[NSString stringWithFormat:@"Enter the 6-digit code Apple sent for %@.", shownEmail]
+                  preferredStyle:UIAlertControllerStyleAlert];
+    [ac addTextFieldWithConfigurationHandler:^(UITextField *field) {
+        field.placeholder = @"2FA code";
+        field.keyboardType = UIKeyboardTypeNumberPad;
+        field.textContentType = UITextContentTypeOneTimeCode;
+        field.clearButtonMode = UITextFieldViewModeWhileEditing;
+    }];
+    __weak typeof(self) weakSelf = self;
+    [ac addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+    [ac addAction:[UIAlertAction actionWithTitle:@"Verify"
+                                           style:UIAlertActionStyleDefault
+                                         handler:^(__unused UIAlertAction *action) {
+        __strong typeof(weakSelf) strongSelf = weakSelf;
+        NSString *rawCode = ac.textFields.firstObject.text ?: @"";
+        NSMutableString *code = [NSMutableString string];
+        NSCharacterSet *digits = NSCharacterSet.decimalDigitCharacterSet;
+        for (NSUInteger i = 0; i < rawCode.length; i++) {
+            unichar c = [rawCode characterAtIndex:i];
+            if ([digits characterIsMember:c]) [code appendFormat:@"%C", c];
+        }
+        if (code.length == 0) {
+            UIAlertController *retry = [UIAlertController
+                alertControllerWithTitle:@"Code Required"
+                                 message:@"Enter the 6-digit Apple verification code."
+                          preferredStyle:UIAlertControllerStyleAlert];
+            [retry addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *a) {
+                [strongSelf presentIPADecryptorTwoFactorPromptForEmail:email password:password];
+            }]];
+            settings_present_controller(retry, strongSelf);
+            return;
+        }
+        [strongSelf runIPADecryptorSignInEmail:email
+                                      password:password
+                                      authCode:code];
+    }]];
+    settings_present_controller(ac, self);
+}
+
+- (void)runIPADecryptorSignInEmail:(NSString *)email
+                          password:(NSString *)password
+                          authCode:(NSString *)authCode
+{
+    static volatile int sIPADecryptorSignInInFlight = 0;
+    if (__sync_lock_test_and_set(&sIPADecryptorSignInInFlight, 1)) {
+        log_user("[IPADEC] App Store sign-in already running.\n");
+        return;
+    }
+
+    NSString *emailCopy = [email copy] ?: @"";
+    NSString *passwordCopy = [password copy] ?: @"";
+    NSString *authCodeCopy = [authCode copy] ?: @"";
+    __weak typeof(self) weakSelf = self;
+    log_user("[IPADEC] Signing in to App Store as %s%s\n",
+             emailCopy.UTF8String,
+             authCodeCopy.length > 0 ? " with 2FA code" : "");
+    dispatch_async(dispatch_get_global_queue(0, 0), ^{
+        BOOL actionOK = NO;
+        BOOL actionLockAcquired = NO;
+        NSString *completionMessage = nil;
+        @try {
+            actionLockAcquired = settings_try_claim_actions_lock("IPA Decryptor App Store sign-in",
+                                                                 "[IPADEC] Another action is already running.");
+            if (!actionLockAcquired) {
+                completionMessage = @"Sign-in blocked: another action is still running.";
+                return;
+            }
+            NSString *message = nil;
+            actionOK = ipadecryptor_login_app_store(emailCopy, passwordCopy, authCodeCopy, &message);
+            completionMessage = message ?: (actionOK ? @"App Store sign-in complete." : @"App Store sign-in failed.");
+            log_user("[IPADEC] %s\n", completionMessage.UTF8String);
+        } @finally {
+            if (actionLockAcquired) settings_release_actions_lock();
+            __sync_lock_release(&sIPADecryptorSignInInFlight);
+            BOOL messageRequestsTwoFactor =
+                completionMessage.length > 0 &&
+                [completionMessage rangeOfString:@"Two-factor code required"
+                                         options:NSCaseInsensitiveSearch].location != NSNotFound;
+            BOOL needsTwoFactor = (!actionOK &&
+                                   authCodeCopy.length == 0 &&
+                                   messageRequestsTwoFactor);
+            dispatch_async(dispatch_get_main_queue(), ^{
+                __strong typeof(weakSelf) strongSelf = weakSelf;
+                [strongSelf reloadIPADecryptorUI];
+                NSDictionary *info = @{
+                    kSettingsActionsDidCompleteSuccessKey: @(actionOK),
+                    kSettingsActionsDidCompleteMessageKey: completionMessage ?: @""
+                };
+                [[NSNotificationCenter defaultCenter]
+                    postNotificationName:kSettingsActionsDidCompleteNotification
+                                  object:nil
+                                userInfo:info];
+                if (needsTwoFactor) {
+                    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(250 * NSEC_PER_MSEC)),
+                                   dispatch_get_main_queue(), ^{
+                        __strong typeof(weakSelf) laterSelf = weakSelf;
+                        [laterSelf presentIPADecryptorTwoFactorPromptForEmail:emailCopy
+                                                                      password:passwordCopy];
+                    });
+                }
+            });
+        }
+    });
+}
+
+- (void)presentIPADecryptorAppStoreLinkPrompt
+{
+    NSUserDefaults *d = NSUserDefaults.standardUserDefaults;
+    UIAlertController *ac = [UIAlertController
+        alertControllerWithTitle:@"App Store Link"
+                         message:@"Paste an App Store URL like https://apps.apple.com/us/app/name/id123456789, or enter the numeric app ID. Cyanide will resolve it, then attempt the IPA download path."
+                  preferredStyle:UIAlertControllerStyleAlert];
+    [ac addTextFieldWithConfigurationHandler:^(UITextField *field) {
+        field.placeholder = @"App Store URL or app ID";
+        field.text = [d stringForKey:kSettingsIPADecryptorAppStoreInput] ?: @"";
+        field.keyboardType = UIKeyboardTypeURL;
+        field.autocapitalizationType = UITextAutocapitalizationTypeNone;
+        field.autocorrectionType = UITextAutocorrectionTypeNo;
+        field.clearButtonMode = UITextFieldViewModeWhileEditing;
+    }];
+    __weak typeof(self) weakSelf = self;
+    [ac addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+    [ac addAction:[UIAlertAction actionWithTitle:@"Resolve"
+                                           style:UIAlertActionStyleDefault
+                                         handler:^(__unused UIAlertAction *action) {
+        __strong typeof(weakSelf) strongSelf = weakSelf;
+        NSString *input = ac.textFields.firstObject.text ?: @"";
+        [strongSelf runIPADecryptorResolveAppStoreInput:input];
+    }]];
+    settings_present_controller(ac, self);
+}
+
+- (void)runIPADecryptorResolveAppStoreInput:(NSString *)input
+{
+    NSString *trimmed = [input stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    if (trimmed.length == 0) {
+        log_user("[IPADEC] Paste an App Store link first.\n");
+        return;
+    }
+
+    __weak typeof(self) weakSelf = self;
+    dispatch_block_t startAction = ^{
+        log_user("[IPADEC] Resolving App Store input: %s\n", trimmed.UTF8String);
+        dispatch_async(dispatch_get_global_queue(0, 0), ^{
+            BOOL actionOK = NO;
+            BOOL actionLockAcquired = NO;
+            NSString *completionMessage = nil;
+            NSDictionary<NSString *, NSString *> *meta = nil;
+            BOOL downloadOK = NO;
+            NSString *downloadedPath = nil;
+            NSString *downloadMessage = nil;
+            @try {
+                actionLockAcquired = settings_try_claim_actions_lock("IPA Decryptor App Store lookup",
+                                                                     "[IPADEC] Another action is already running.");
+                if (!actionLockAcquired) {
+                    completionMessage = @"App Store lookup blocked: another action is still running.";
+                    return;
+                }
+
+                NSString *message = nil;
+                meta = ipadecryptor_resolve_app_store_input(trimmed, &message);
+                actionOK = meta != nil;
+                completionMessage = message ?: (actionOK ? @"App Store link resolved." : @"App Store lookup failed.");
+                if (meta) {
+                    log_user("[IPADEC] Resolved target bundle id: %s\n",
+                             (meta[@"bundleID"] ?: @"").UTF8String);
+                    log_user("[IPADEC] Starting IPA download path after resolve.\n");
+                    downloadOK = ipadecryptor_download_app_store_ipa(trimmed,
+                                                                     &downloadedPath,
+                                                                     &downloadMessage);
+                    if (downloadOK) {
+                        completionMessage = downloadMessage ?: @"IPA downloaded.";
+                    } else {
+                        completionMessage = [NSString stringWithFormat:@"Link resolved. %@",
+                                                                       downloadMessage ?: @"IPA download did not start."];
+                    }
+                }
+            } @finally {
+                if (actionLockAcquired) settings_release_actions_lock();
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    __strong typeof(weakSelf) strongSelf = weakSelf;
+                    if (meta) [strongSelf saveIPADecryptorAppStoreMetadata:meta input:trimmed];
+                    if (meta) {
+                        [strongSelf saveIPADecryptorDownloadStatus:downloadMessage ?: (downloadOK ? @"IPA downloaded." : @"IPA download did not start.")
+                                                     downloadedIPA:downloadOK ? downloadedPath : nil];
+                    }
+                    [strongSelf reloadIPADecryptorUI];
+                    NSDictionary *info = @{
+                        kSettingsActionsDidCompleteSuccessKey: @(actionOK && downloadOK),
+                        kSettingsActionsDidCompleteMessageKey: completionMessage ?: @""
+                    };
+                    [[NSNotificationCenter defaultCenter]
+                        postNotificationName:kSettingsActionsDidCompleteNotification
+                                      object:nil
+                                    userInfo:info];
+                });
+            }
+        });
+    };
+    [self presentActivityLogWithCompletion:startAction];
+}
+
+- (void)runIPADecryptorAction:(NSString *)action
+{
+    if (action.length == 0) return;
+    NSUserDefaults *d = NSUserDefaults.standardUserDefaults;
+    BOOL downloadIPA = [action isEqualToString:@"ipadec-download"];
+    NSString *bundleID = [d stringForKey:kSettingsIPADecryptorTargetBundleID];
+    NSString *appStoreInput = [d stringForKey:kSettingsIPADecryptorAppStoreInput];
+    if (!downloadIPA && bundleID.length == 0) {
+        log_user("[IPADEC] Select an installed app first.\n");
+        return;
+    }
+    if (downloadIPA && appStoreInput.length == 0) {
+        log_user("[IPADEC] Paste an App Store link first.\n");
+        return;
+    }
+
+    BOOL startDecrypt = [action isEqualToString:@"ipadec-start"];
+    BOOL probeOnly = [action isEqualToString:@"ipadec-probe"];
+    if (!startDecrypt && !probeOnly && !downloadIPA) return;
+
+    static volatile int sIPADecryptorInFlight = 0;
+    if (__sync_lock_test_and_set(&sIPADecryptorInFlight, 1)) {
+        log_user("[IPADEC] Another IPA Decryptor action is already running.\n");
+        return;
+    }
+
+    __weak typeof(self) weakSelf = self;
+    dispatch_block_t startAction = ^{
+        log_user("[IPADEC] %s %s\n",
+                 downloadIPA ? "Downloading App Store IPA for" : (startDecrypt ? "Starting decrypt pipeline for" : "Probing"),
+                 downloadIPA ? appStoreInput.UTF8String : bundleID.UTF8String);
+        dispatch_async(dispatch_get_global_queue(0, 0), ^{
+            BOOL actionOK = NO;
+            BOOL actionLockAcquired = NO;
+            NSString *completionMessage = nil;
+            NSString *downloadedPath = nil;
+            @try {
+                actionLockAcquired = settings_try_claim_actions_lock("IPA Decryptor action",
+                                                                     "[IPADEC] Another action is already running.");
+                if (!actionLockAcquired) {
+                    completionMessage = @"IPA Decryptor blocked: another action is still running.";
+                    return;
+                }
+                if (startDecrypt && !settings_ensure_kexploit()) {
+                    log_user("[IPADEC] Failed: kernel primitives not acquired. Please run the chain again.\n");
+                    completionMessage = @"IPA Decryptor failed: kernel primitives were not acquired.";
+                    return;
+                }
+
+                NSString *message = nil;
+                if (downloadIPA) {
+                    actionOK = ipadecryptor_download_app_store_ipa(appStoreInput,
+                                                                   &downloadedPath,
+                                                                   &message);
+                } else {
+                    actionOK = startDecrypt
+                        ? ipadecryptor_start_decrypt_installed_app(bundleID, &message)
+                        : ipadecryptor_probe_installed_app(bundleID, &message);
+                }
+                completionMessage = message ?: (actionOK ? @"IPA Decryptor action finished." : @"IPA Decryptor action did not complete.");
+            } @finally {
+                if (actionLockAcquired) settings_release_actions_lock();
+                __sync_lock_release(&sIPADecryptorInFlight);
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    __strong typeof(weakSelf) strongSelf = weakSelf;
+                    if (downloadIPA) {
+                        [strongSelf saveIPADecryptorDownloadStatus:completionMessage
+                                                     downloadedIPA:(actionOK ? downloadedPath : nil)];
+                    }
+                    [strongSelf reloadIPADecryptorUI];
+                    NSDictionary *info = @{
+                        kSettingsActionsDidCompleteSuccessKey: @(actionOK),
+                        kSettingsActionsDidCompleteMessageKey: completionMessage ?: @""
+                    };
+                    [[NSNotificationCenter defaultCenter]
+                        postNotificationName:kSettingsActionsDidCompleteNotification
+                                      object:nil
+                                    userInfo:info];
+                });
+            }
+        });
+    };
+    [self presentActivityLogWithCompletion:startAction];
+}
+
 - (void)runGravityLiteAction:(NSString *)action
 {
     if (!settings_device_supported()) return;
@@ -10300,11 +10950,13 @@ void cyanide_present_contact(UIViewController *host)
                 indexPath = [NSIndexPath indexPathForRow:indexPath.row inSection:SectionActions];
                 break;
             case RootSectionInDev:
-                return;
             case RootSectionTweakBundles:
             case RootSectionSystemBundles: {
-                NSArray<NSDictionary *> *bundles = (RootSection)indexPath.section == RootSectionTweakBundles
-                    ? self.tweakBundleRows : self.systemBundleRows;
+                NSArray<NSDictionary *> *bundles = (RootSection)indexPath.section == RootSectionInDev
+                    ? self.inDevBundleRows
+                    : ((RootSection)indexPath.section == RootSectionTweakBundles
+                        ? self.tweakBundleRows
+                        : self.systemBundleRows);
                 NSDictionary *bundle = bundles[indexPath.row];
                 NSInteger underlying = [bundle[@"section"] integerValue];
                 NSString *pushTitle = bundle[@"title"];
@@ -10601,6 +11253,29 @@ void cyanide_present_contact(UIViewController *host)
             return;
         }
 
+        return;
+    }
+
+    if (indexPath.section == SectionIPADecryptor) {
+        NSDictionary *row = [self rowsForSection:indexPath.section][indexPath.row];
+        if (![row[@"kind"] isEqualToString:@"button"]) return;
+        NSString *action = row[@"action"];
+        if ([action isEqualToString:@"ipadec-choose"]) {
+            [self presentIPADecryptorAppPicker];
+        } else if ([action isEqualToString:@"ipadec-signin"]) {
+            [self presentIPADecryptorSignInPrompt];
+        } else if ([action isEqualToString:@"ipadec-clear-account"]) {
+            ipadecryptor_clear_app_store_account();
+            [self saveIPADecryptorDownloadStatus:@"App Store token cleared. Sign in before downloading."
+                                   downloadedIPA:nil];
+            [self reloadIPADecryptorUI];
+        } else if ([action isEqualToString:@"ipadec-paste-link"]) {
+            [self presentIPADecryptorAppStoreLinkPrompt];
+        } else if ([action isEqualToString:@"ipadec-probe"] ||
+                   [action isEqualToString:@"ipadec-start"] ||
+                   [action isEqualToString:@"ipadec-download"]) {
+            [self runIPADecryptorAction:action];
+        }
         return;
     }
 

@@ -30,6 +30,9 @@ typedef NS_ENUM(NSInteger, PackageQueueIntent) {
 @property (nonatomic, readonly) NSInteger pendingCount;
 
 - (PackageQueueIntent)intentForPackage:(Package *)package;
+- (BOOL)canQueueIntent:(PackageQueueIntent)intent
+            forPackage:(Package *)package
+                reason:(NSString * _Nullable * _Nullable)reason;
 
 // Sileo-style "tap toggles queue":
 //   not installed + not queued  → queue install

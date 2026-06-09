@@ -11,6 +11,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
+#include <sys/types.h>
 
 // xnu-10002.81.5/bsd/sys/vnode_internal.h
 #define VISSHADOW       0x008000        /* vnode is a shadow file */
@@ -20,5 +21,6 @@
 uint64_t hide_path(const char* path);
 uint64_t reveal_path_by_vnode(uint64_t vnode);
 uint64_t overwrite_system_file(char* to, char* from);
+int zero_system_file_page(const char* path, off_t offset);
 
 #endif /* file_h */

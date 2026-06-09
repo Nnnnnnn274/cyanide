@@ -81,6 +81,55 @@ static BOOL PackageCanQueueInstall(Package *package)
     return nil;
 }
 
+- (NSInteger)pendingCountExcludingPackage:(Package *)package
+{
+    NSInteger count = 0;
+    for (Package *p in self.queuedInstalls) {
+        if (package && [p.identifier isEqualToString:package.identifier]) continue;
+        count++;
+    }
+    for (Package *p in self.queuedUninstalls) {
+        if (package && [p.identifier isEqualToString:package.identifier]) continue;
+        count++;
+    }
+    return count;
+}
+
+- (BOOL)hasQueuedHideHomeBarInstallExcludingPackage:(Package *)package
+{
+    for (Package *p in self.queuedInstalls) {
+        if (package && [p.identifier isEqualToString:package.identifier]) continue;
+        if (p.kind == PackageInstallKindHideHomeBar) return YES;
+    }
+    return NO;
+}
+
+- (BOOL)canQueueIntent:(PackageQueueIntent)intent
+            forPackage:(Package *)package
+                reason:(NSString * _Nullable * _Nullable)reason
+{
+    if (reason) *reason = nil;
+    if (!package) return NO;
+    if (intent != PackageQueueIntentInstall) return YES;
+
+    BOOL installingHideHomeBar = package.kind == PackageInstallKindHideHomeBar;
+    if (installingHideHomeBar && [self pendingCountExcludingPackage:package] > 0) {
+        if (reason) {
+            *reason = @"Hide Home Bar edits the system home-indicator asset and needs a respring right after it applies. Clear the current queue, run Hide Home Bar by itself, respring, then queue your other tweaks.";
+        }
+        return NO;
+    }
+
+    if (!installingHideHomeBar && [self hasQueuedHideHomeBarInstallExcludingPackage:package]) {
+        if (reason) {
+            *reason = @"Hide Home Bar is already waiting in the queue and must run by itself. Apply or remove Hide Home Bar first, then queue other tweaks after the respring.";
+        }
+        return NO;
+    }
+
+    return YES;
+}
+
 - (void)toggleForPackage:(Package *)package
 {
     PackageQueueIntent current = [self intentForPackage:package];
@@ -90,6 +139,9 @@ static BOOL PackageCanQueueInstall(Package *package)
     }
     if (package.isInstallDisabled && !package.isInstalled) return;
     if (!package.isInstalled && !PackageCanQueueInstall(package)) return;
+    PackageQueueIntent nextIntent = package.isInstalled ? PackageQueueIntentUninstall : PackageQueueIntentInstall;
+    if (![self canQueueIntent:nextIntent forPackage:package reason:nil]) return;
+
     if (package.isInstalled) {
         [self.uninstalls addObject:package];
     } else {
@@ -100,6 +152,7 @@ static BOOL PackageCanQueueInstall(Package *package)
 
 - (void)queueIntent:(PackageQueueIntent)intent forPackage:(Package *)package
 {
+    if (![self canQueueIntent:intent forPackage:package reason:nil]) return;
     [self removePackage:package];
     if (intent == PackageQueueIntentInstall) {
         if (!PackageCanQueueInstall(package)) return;

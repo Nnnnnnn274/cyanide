@@ -27,6 +27,15 @@ safe to describe as a public user-facing behavior change, omit it.
 
 ## Released
 
+### v1.2.17 - 2026-06-09
+
+- [x] Added Hide Home Bar as a beta package using DirtyZero-style MaterialKit page zeroing.
+- [x] Made Hide Home Bar run as a standalone queue item with prominent install-queue guidance.
+- [x] Added public Hide Home Bar credits in the package details.
+- [x] Added a respring prompt after Hide Home Bar finishes so users know when the home indicator will disappear.
+- [x] Fixed a queue review crash when pending changes finish while the queue screen is refreshing.
+- [x] Reduced Dynamic Stage Lite picker startup work to avoid SpringBoard resprings on large app libraries.
+
 ### v1.2.16 - 2026-06-09
 
 - [x] Prevented overlapping tweak actions from interfering with Apply Tweaks and direct controls.

@@ -11,6 +11,7 @@
 NS_ASSUME_NONNULL_BEGIN
 
 @interface InstallProgressViewController : UIViewController
+@property (nonatomic, assign) BOOL promptsForHideHomeBarRespring;
 @end
 
 NS_ASSUME_NONNULL_END

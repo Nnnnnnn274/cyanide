@@ -132,6 +132,7 @@ typedef NS_ENUM(NSInteger, QueueReviewSection) {
 - (void)refreshUI
 {
     [self.tableView reloadData];
+    [self updateHomeBarWarningHeader];
     NSInteger count = [PackageQueue sharedQueue].pendingCount;
     self.emptyLabel.hidden = (count > 0);
     self.tableView.hidden = (count == 0);
@@ -149,6 +150,81 @@ typedef NS_ENUM(NSInteger, QueueReviewSection) {
     UIButtonConfiguration *cfg = self.confirmButton.configuration;
     cfg.title = confirmTitle;
     self.confirmButton.configuration = cfg;
+}
+
+- (UIView *)homeBarWarningHeaderView
+{
+    CGFloat width = self.tableView.bounds.size.width;
+    if (width <= 0.0) width = self.view.bounds.size.width;
+    if (width <= 0.0) width = UIScreen.mainScreen.bounds.size.width;
+
+    UIView *container = [[UIView alloc] initWithFrame:CGRectMake(0.0, 0.0, width, 1.0)];
+    container.backgroundColor = UIColor.systemGroupedBackgroundColor;
+
+    UIView *card = [[UIView alloc] init];
+    card.translatesAutoresizingMaskIntoConstraints = NO;
+    card.backgroundColor = [UIColor.systemOrangeColor colorWithAlphaComponent:0.14];
+    card.layer.cornerRadius = 16.0;
+    card.layer.borderWidth = 1.0;
+    card.layer.borderColor = [UIColor.systemOrangeColor colorWithAlphaComponent:0.28].CGColor;
+    [container addSubview:card];
+
+    UIImageView *icon = [[UIImageView alloc] initWithImage:[UIImage systemImageNamed:@"exclamationmark.triangle.fill"]];
+    icon.translatesAutoresizingMaskIntoConstraints = NO;
+    icon.tintColor = UIColor.systemOrangeColor;
+    icon.contentMode = UIViewContentModeScaleAspectFit;
+    [card addSubview:icon];
+
+    UILabel *title = [[UILabel alloc] init];
+    title.translatesAutoresizingMaskIntoConstraints = NO;
+    title.text = @"Hide Home Bar must run alone";
+    title.font = [UIFont systemFontOfSize:16.0 weight:UIFontWeightBold];
+    title.textColor = UIColor.labelColor;
+    [card addSubview:title];
+
+    UILabel *body = [[UILabel alloc] init];
+    body.translatesAutoresizingMaskIntoConstraints = NO;
+    body.text = @"It edits the system home-indicator asset and then needs a respring. Confirm only Hide Home Bar, respring, then queue your other tweaks.";
+    body.font = [UIFont systemFontOfSize:13.0 weight:UIFontWeightRegular];
+    body.textColor = UIColor.secondaryLabelColor;
+    body.numberOfLines = 0;
+    [card addSubview:body];
+
+    [NSLayoutConstraint activateConstraints:@[
+        [card.topAnchor constraintEqualToAnchor:container.topAnchor constant:12.0],
+        [card.leadingAnchor constraintEqualToAnchor:container.leadingAnchor constant:16.0],
+        [card.trailingAnchor constraintEqualToAnchor:container.trailingAnchor constant:-16.0],
+        [card.bottomAnchor constraintEqualToAnchor:container.bottomAnchor constant:-8.0],
+
+        [icon.topAnchor constraintEqualToAnchor:card.topAnchor constant:14.0],
+        [icon.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:14.0],
+        [icon.widthAnchor constraintEqualToConstant:24.0],
+        [icon.heightAnchor constraintEqualToConstant:24.0],
+
+        [title.topAnchor constraintEqualToAnchor:card.topAnchor constant:12.0],
+        [title.leadingAnchor constraintEqualToAnchor:icon.trailingAnchor constant:10.0],
+        [title.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-14.0],
+
+        [body.topAnchor constraintEqualToAnchor:title.bottomAnchor constant:4.0],
+        [body.leadingAnchor constraintEqualToAnchor:title.leadingAnchor],
+        [body.trailingAnchor constraintEqualToAnchor:title.trailingAnchor],
+        [body.bottomAnchor constraintEqualToAnchor:card.bottomAnchor constant:-12.0],
+    ]];
+
+    CGSize size = [container systemLayoutSizeFittingSize:CGSizeMake(width, 0.0)
+                           withHorizontalFittingPriority:UILayoutPriorityRequired
+                                 verticalFittingPriority:UILayoutPriorityFittingSizeLevel];
+    container.frame = CGRectMake(0.0, 0.0, width, ceil(size.height));
+    return container;
+}
+
+- (void)updateHomeBarWarningHeader
+{
+    if (![self queueIncludesHideHomeBarInstall]) {
+        self.tableView.tableHeaderView = nil;
+        return;
+    }
+    self.tableView.tableHeaderView = [self homeBarWarningHeaderView];
 }
 
 - (void)queueChanged:(NSNotification *)note
@@ -187,6 +263,14 @@ typedef NS_ENUM(NSInteger, QueueReviewSection) {
     return @[];
 }
 
+- (BOOL)queueIncludesHideHomeBarInstall
+{
+    for (Package *pkg in [PackageQueue sharedQueue].queuedInstalls) {
+        if (pkg.kind == PackageInstallKindHideHomeBar) return YES;
+    }
+    return NO;
+}
+
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section
 {
     return (NSInteger)[self packagesForSection:section].count;
@@ -213,6 +297,8 @@ typedef NS_ENUM(NSInteger, QueueReviewSection) {
                 label = @"Apply";
             } else if (allSameKind && commonKind == PackageInstallKindCallRecordingSound) {
                 label = @"Silence";
+            } else if (allSameKind && commonKind == PackageInstallKindHideHomeBar) {
+                label = @"Hide";
             } else {
                 label = @"Activate";
             }
@@ -223,6 +309,8 @@ typedef NS_ENUM(NSInteger, QueueReviewSection) {
             } else if (allSameKind && commonKind == PackageInstallKindNanoRegistry) {
                 label = @"Remove";
             } else if (allSameKind && commonKind == PackageInstallKindCallRecordingSound) {
+                label = @"Restore";
+            } else if (allSameKind && commonKind == PackageInstallKindHideHomeBar) {
                 label = @"Restore";
             } else {
                 label = @"Deactivate";
@@ -236,9 +324,16 @@ typedef NS_ENUM(NSInteger, QueueReviewSection) {
 
 - (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section
 {
-    if ((QueueReviewSection)section != QueueReviewSectionReApply) return nil;
-    if ([self reApplyPackages].count == 0) return nil;
-    return @"These are already installed, not new pending changes. Confirming re-runs the chain so RemoteCall-backed tweaks come back after a force-quit. To stop one from running, deactivate it from the Installer tab, or use Reset All Packages in Settings → Quick Actions.";
+    switch ((QueueReviewSection)section) {
+        case QueueReviewSectionInstall:
+            if (![self queueIncludesHideHomeBarInstall]) return nil;
+            return @"Hide Home Bar must run by itself because it edits the system home-indicator asset and then needs a respring. Run it alone first, then apply other tweaks after the respring.";
+        case QueueReviewSectionReApply:
+            if ([self reApplyPackages].count == 0) return nil;
+            return @"These are already installed, not new pending changes. Confirming re-runs the chain so RemoteCall-backed tweaks come back after a force-quit. To stop one from running, deactivate it from the Installer tab, or use Reset All Packages in Settings → Quick Actions.";
+        default:
+            return nil;
+    }
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath
@@ -247,7 +342,22 @@ typedef NS_ENUM(NSInteger, QueueReviewSection) {
     if (!cell) {
         cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:@"QueueRow"];
     }
-    Package *pkg = [self packagesForSection:indexPath.section][indexPath.row];
+    NSArray<Package *> *packages = [self packagesForSection:indexPath.section];
+    if (indexPath.row >= (NSInteger)packages.count) {
+        cell.textLabel.text = @"No longer pending";
+        cell.textLabel.font = [UIFont systemFontOfSize:17.0 weight:UIFontWeightRegular];
+        cell.detailTextLabel.text = @"This queue row was already applied or cleared.";
+        cell.detailTextLabel.textColor = UIColor.secondaryLabelColor;
+        cell.detailTextLabel.font = [UIFont systemFontOfSize:12.0];
+        cell.imageView.image = [UIImage systemImageNamed:@"checkmark.circle"];
+        cell.imageView.tintColor = UIColor.tertiaryLabelColor;
+        cell.selectionStyle = UITableViewCellSelectionStyleNone;
+        cell.accessoryView = nil;
+        cell.accessoryType = UITableViewCellAccessoryNone;
+        return cell;
+    }
+
+    Package *pkg = packages[indexPath.row];
     cell.textLabel.text = pkg.name;
     cell.textLabel.font = [UIFont systemFontOfSize:17.0 weight:UIFontWeightSemibold];
 
@@ -265,6 +375,10 @@ typedef NS_ENUM(NSInteger, QueueReviewSection) {
                     break;
                 case PackageInstallKindCallRecordingSound:
                     cell.detailTextLabel.text = @"Pending sound silence";
+                    cell.detailTextLabel.textColor = UIColor.systemOrangeColor;
+                    break;
+                case PackageInstallKindHideHomeBar:
+                    cell.detailTextLabel.text = @"Runs alone; respring required";
                     cell.detailTextLabel.textColor = UIColor.systemOrangeColor;
                     break;
                 default:
@@ -285,6 +399,10 @@ typedef NS_ENUM(NSInteger, QueueReviewSection) {
                     break;
                 case PackageInstallKindCallRecordingSound:
                     cell.detailTextLabel.text = @"Pending sound restore";
+                    cell.detailTextLabel.textColor = UIColor.systemGreenColor;
+                    break;
+                case PackageInstallKindHideHomeBar:
+                    cell.detailTextLabel.text = @"Pending respring restore";
                     cell.detailTextLabel.textColor = UIColor.systemGreenColor;
                     break;
                 default:
@@ -321,7 +439,10 @@ typedef NS_ENUM(NSInteger, QueueReviewSection) {
     QueueReviewSection s = (QueueReviewSection)indexPath.section;
     if (s != QueueReviewSectionInstall && s != QueueReviewSectionUninstall) return nil;
 
-    Package *pkg = [self packagesForSection:indexPath.section][indexPath.row];
+    NSArray<Package *> *packages = [self packagesForSection:indexPath.section];
+    if (indexPath.row >= (NSInteger)packages.count) return nil;
+
+    Package *pkg = packages[indexPath.row];
     UIContextualAction *remove = [UIContextualAction contextualActionWithStyle:UIContextualActionStyleDestructive
                                                                          title:@"Remove"
                                                                        handler:^(UIContextualAction * _Nonnull action, __kindof UIView * _Nonnull sourceView, void (^ _Nonnull completionHandler)(BOOL)) {
@@ -337,8 +458,27 @@ typedef NS_ENUM(NSInteger, QueueReviewSection) {
 {
     if ([PackageQueue sharedQueue].pendingCount == 0) return;
     NSInteger count = [PackageQueue sharedQueue].pendingCount;
+    BOOL includesHideHomeBar = NO;
+    for (Package *pkg in [PackageQueue sharedQueue].queuedInstalls) {
+        if (pkg.kind == PackageInstallKindHideHomeBar) {
+            includesHideHomeBar = YES;
+            break;
+        }
+    }
+    if (includesHideHomeBar && count > 1) {
+        UIAlertController *ac = [UIAlertController
+            alertControllerWithTitle:@"Run Hide Home Bar Alone"
+                             message:@"Hide Home Bar edits the system home-indicator asset and needs a respring after it applies. Remove the other pending changes, run Hide Home Bar by itself, then apply other tweaks after the respring."
+                      preferredStyle:UIAlertControllerStyleAlert];
+        [ac addAction:[UIAlertAction actionWithTitle:@"OK"
+                                               style:UIAlertActionStyleDefault
+                                             handler:nil]];
+        [self presentViewController:ac animated:YES completion:nil];
+        return;
+    }
 
     InstallProgressViewController *vc = [[InstallProgressViewController alloc] init];
+    vc.promptsForHideHomeBarRespring = includesHideHomeBar;
     UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:vc];
     nav.modalPresentationStyle = UIModalPresentationAutomatic;
     [self presentViewController:nav animated:YES completion:^{

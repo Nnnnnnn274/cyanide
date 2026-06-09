@@ -116,6 +116,9 @@ NSString *settings_snowboardlite_selected_theme_display_name(void);
 // (kSettingsNanoMaxPairing, etc.). Returns YES on success.
 BOOL settings_apply_nano_registry_now(BOOL apply);
 BOOL settings_apply_call_recording_sound_disabled(BOOL disabled);
+BOOL settings_apply_hide_home_bar_hidden(BOOL hidden);
+BOOL settings_hide_home_bar_respring_pending(void);
+void settings_present_hide_home_bar_respring_prompt(UIViewController *host);
 
 void settings_run_actions(void);
 void settings_run_pending_actions(void);

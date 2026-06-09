@@ -71,7 +71,8 @@ typedef NS_ENUM(NSInteger, PackageDetailSection) {
 {
     return self.package.kind == PackageInstallKindOTA
         || self.package.kind == PackageInstallKindNanoRegistry
-        || self.package.kind == PackageInstallKindCallRecordingSound;
+        || self.package.kind == PackageInstallKindCallRecordingSound
+        || self.package.kind == PackageInstallKindHideHomeBar;
 }
 
 - (BOOL)isDirectToolPackage
@@ -88,10 +89,14 @@ typedef NS_ENUM(NSInteger, PackageDetailSection) {
         if (self.package.kind == PackageInstallKindCallRecordingSound) {
             return (intent == PackageQueueIntentInstall) ? @"Cancel Silence" : @"Cancel Restore";
         }
+        if (self.package.kind == PackageInstallKindHideHomeBar) {
+            return (intent == PackageQueueIntentInstall) ? @"Cancel Hide" : @"Cancel Restore";
+        }
         return (intent == PackageQueueIntentInstall) ? @"Cancel Disable" : @"Cancel Enable";
     }
     if (self.package.kind == PackageInstallKindNanoRegistry) return @"Apply/Remove";
     if (self.package.kind == PackageInstallKindCallRecordingSound) return @"Silence/Restore";
+    if (self.package.kind == PackageInstallKindHideHomeBar) return @"Hide/Restore";
     return @"Disable/Enable";
 }
 
@@ -105,6 +110,11 @@ typedef NS_ENUM(NSInteger, PackageDetailSection) {
     }
     if (self.package.kind == PackageInstallKindCallRecordingSound) {
         if (intent == PackageQueueIntentInstall) return @"Silence Pending";
+        if (intent == PackageQueueIntentUninstall) return @"Restore Pending";
+        return @"Manual Control";
+    }
+    if (self.package.kind == PackageInstallKindHideHomeBar) {
+        if (intent == PackageQueueIntentInstall) return @"Hide Pending";
         if (intent == PackageQueueIntentUninstall) return @"Restore Pending";
         return @"Manual Control";
     }
@@ -150,6 +160,26 @@ typedef NS_ENUM(NSInteger, PackageDetailSection) {
     return UIColor.secondaryLabelColor;
 }
 
+- (BOOL)presentQueueConflictIfNeededForIntent:(PackageQueueIntent)intent
+{
+    NSString *reason = nil;
+    if ([[PackageQueue sharedQueue] canQueueIntent:intent
+                                       forPackage:self.package
+                                           reason:&reason]) {
+        return NO;
+    }
+
+    UIAlertController *alert =
+        [UIAlertController alertControllerWithTitle:@"Run Hide Home Bar Alone"
+                                            message:reason ?: @"Hide Home Bar must be the only pending queue item."
+                                     preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:@"OK"
+                                              style:UIAlertActionStyleDefault
+                                            handler:nil]];
+    [self presentViewController:alert animated:YES completion:nil];
+    return YES;
+}
+
 - (NSArray<NSArray<NSString *> *> *)currentInfoRows
 {
     NSMutableArray<NSArray<NSString *> *> *rows = [self.infoRows mutableCopy];
@@ -159,12 +189,17 @@ typedef NS_ENUM(NSInteger, PackageDetailSection) {
 
 - (void)queueManualIntent:(PackageQueueIntent)intent
 {
+    if ([self presentQueueConflictIfNeededForIntent:intent]) return;
+
     if (self.package.kind == PackageInstallKindNanoRegistry) {
         log_user("[INSTALLER] Pending watch-pairing %s\n",
                  intent == PackageQueueIntentInstall ? "apply" : "remove");
     } else if (self.package.kind == PackageInstallKindCallRecordingSound) {
         log_user("[INSTALLER] Pending call-recording sound %s\n",
                  intent == PackageQueueIntentInstall ? "silence" : "restore");
+    } else if (self.package.kind == PackageInstallKindHideHomeBar) {
+        log_user("[INSTALLER] Pending home bar %s\n",
+                 intent == PackageQueueIntentInstall ? "hide" : "restore");
     } else {
         log_user("[INSTALLER] Pending OTA %s\n",
                  intent == PackageQueueIntentInstall ? "disable" : "enable");
@@ -214,6 +249,25 @@ typedef NS_ENUM(NSInteger, PackageDetailSection) {
         }];
 
         return [UIMenu menuWithTitle:@"Call Recording Sound" children:@[silence, restore]];
+    }
+
+    if (self.package.kind == PackageInstallKindHideHomeBar) {
+        UIAction *hide = [UIAction actionWithTitle:@"Hide Home Bar"
+                                             image:[UIImage systemImageNamed:@"line.3.horizontal"]
+                                        identifier:nil
+                                           handler:^(__kindof UIAction *_) {
+            [self queueManualIntent:PackageQueueIntentInstall];
+        }];
+        hide.attributes = UIMenuElementAttributesDestructive;
+
+        UIAction *restore = [UIAction actionWithTitle:@"Restore Home Bar"
+                                                image:[UIImage systemImageNamed:@"arrow.clockwise"]
+                                           identifier:nil
+                                              handler:^(__kindof UIAction *_) {
+            [self queueManualIntent:PackageQueueIntentUninstall];
+        }];
+
+        return [UIMenu menuWithTitle:@"Home Bar" children:@[hide, restore]];
     }
 
     UIAction *disable = [UIAction actionWithTitle:@"Disable OTA Updates"
@@ -583,6 +637,7 @@ typedef NS_ENUM(NSInteger, PackageDetailSection) {
     } else if (self.package.isInstalled) {
         log_user("[INSTALLER] Pending deactivation: %s\n", self.package.name.UTF8String);
     } else {
+        if ([self presentQueueConflictIfNeededForIntent:PackageQueueIntentInstall]) return;
         log_user("[INSTALLER] Pending activation: %s\n", self.package.name.UTF8String);
     }
     [[PackageQueue sharedQueue] toggleForPackage:self.package];
@@ -620,6 +675,7 @@ typedef NS_ENUM(NSInteger, PackageDetailSection) {
     [alert addAction:[UIAlertAction actionWithTitle:@"Activate Anyway"
                                              style:UIAlertActionStyleDefault
                                            handler:^(UIAlertAction *_) {
+        if ([self presentQueueConflictIfNeededForIntent:PackageQueueIntentInstall]) return;
         log_user("[INSTALLER] Pending activation: %s\n", self.package.name.UTF8String);
         [[PackageQueue sharedQueue] toggleForPackage:self.package];
     }]];

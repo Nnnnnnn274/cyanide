@@ -17,6 +17,7 @@
 @property (nonatomic, strong) UILabel *statusLabel;
 @property (nonatomic, strong) UIBarButtonItem *hideOrDoneButton;
 @property (nonatomic, assign) BOOL completed;
+@property (nonatomic, assign) BOOL didPromptForHideHomeBarRespring;
 @end
 
 @implementation InstallProgressViewController
@@ -145,6 +146,22 @@
         : [UIColor colorWithRed:1.0 green:0.38 blue:0.32 alpha:1.0];
     self.title = success ? @"Complete" : @"Failed";
     self.hideOrDoneButton.title = @"Done";
+    if (success &&
+        self.promptsForHideHomeBarRespring &&
+        settings_hide_home_bar_respring_pending()) {
+        [self scheduleHideHomeBarRespringPrompt];
+    }
+}
+
+- (void)scheduleHideHomeBarRespringPrompt
+{
+    if (self.didPromptForHideHomeBarRespring) return;
+    self.didPromptForHideHomeBarRespring = YES;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.35 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        if (!self.view.window) return;
+        settings_present_hide_home_bar_respring_prompt(self);
+    });
 }
 
 - (NSAttributedString *)buildBannerText {

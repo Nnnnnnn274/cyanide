@@ -29,6 +29,7 @@ static const NSInteger kSecLiveWP           = 19;
 static const NSInteger kSecLocationSim      = 20;
 static const NSInteger kSecGravityLite      = 21;
 static const NSInteger kSecAppSwitcherGrid  = 22;
+static const NSInteger kSecIPADecryptor     = 23;
 
 + (NSArray<Package *> *)allPackages
 {
@@ -184,6 +185,22 @@ static const NSInteger kSecAppSwitcherGrid  = 22;
         notificationIsland.creatorOnly = YES;
         notificationIsland.unstableWarning = @"⚠️ In development — polls SpringBoard notification state over RemoteCall and may miss banners, duplicate activity updates, or destabilize SpringBoard.";
 
+        Package *ipaDecryptor = [[Package alloc] initWithIdentifier:@"com.darksword.ipadecryptor"
+                                           name:@"IPA Decryptor"
+                               shortDescription:@"Decrypt installed App Store app payloads"
+                                longDescription:@"In-development local IPA decryptor. Select an installed user app or paste an App Store link, resolve it to a bundle ID, sign in for an App Store download token, fetch the encrypted IPA to Documents, probe FairPlay encryption metadata, then run the decrypt pipeline.\n\nCurrent build wires app discovery, App Store link resolution, sign-in, encrypted IPA fetching, and encryption probing first. SINF/iTunesMetadata patching, decrypted page dumping, and rebuilding the Payload IPA are being added behind this same settings tool."
+                                        version:version
+                                         author:@"londek / zeroxjf"
+                                       category:@"In Development"
+                                     symbolName:@"lock.open.fill"
+                                           kind:PackageInstallKindDirectTool
+                                     enabledKey:nil
+                                          isNew:YES];
+        ipaDecryptor.settingsSection = kSecIPADecryptor;
+        ipaDecryptor.experimental = YES;
+        ipaDecryptor.creatorOnly = YES;
+        ipaDecryptor.unstableWarning = @"⚠️ In development — encrypted IPA download is experimental. SINF/iTunesMetadata patching, task-port dump, and IPA writer stages are not finished yet.";
+
         Package *stageStrip = [[Package alloc] initWithIdentifier:@"com.darksword.stagestrip"
                                            name:@"Dynamic Stage Lite"
                                shortDescription:@"Two floating app windows, iPad-style"
@@ -296,7 +313,7 @@ static const NSInteger kSecAppSwitcherGrid  = 22;
         Package *appSwitcherGrid = [[Package alloc] initWithIdentifier:@"com.darksword.appswitchergrid"
                                            name:@"App Switcher Grid"
                                shortDescription:@"Grid-style app switcher"
-                                longDescription:@"Applies a runtime SpringBoard method patch that makes the app switcher use grid/deck style.\n\nThis does not write system files. A respring restores the stock app switcher.\n\nPorted from d1y/cyanide-ios."
+                                longDescription:@"Applies a runtime SpringBoard method patch that makes the app switcher use grid/deck style.\n\nThis does not write system files. A respring restores the stock app switcher. If you respring after Hide Home Bar, run App Switcher Grid again because respring resets this live SpringBoard patch.\n\nPorted from d1y/cyanide-ios."
                                         version:version
                                          author:@"rooootdev"
                                        category:@"Beta"
@@ -305,7 +322,7 @@ static const NSInteger kSecAppSwitcherGrid  = 22;
                                      enabledKey:kSettingsAppSwitcherGridEnabled
                                           isNew:YES];
         appSwitcherGrid.settingsSection = kSecAppSwitcherGrid;
-        appSwitcherGrid.unstableWarning = @"Beta: patches SpringBoard runtime methods in memory. Respring restores stock, but unsupported builds may glitch the app switcher or crash SpringBoard.";
+        appSwitcherGrid.unstableWarning = @"Beta: patches SpringBoard runtime methods in memory. Respring restores stock, but unsupported builds may glitch the app switcher or crash SpringBoard. Re-run after any respring.";
 
         Package *nanoRegistry = [[Package alloc] initWithIdentifier:@"com.darksword.nanoregistry"
                                            name:@"Watch Pairing Override"
@@ -334,6 +351,19 @@ static const NSInteger kSecAppSwitcherGrid  = 22;
                                           isNew:YES];
         callRecordingSound.experimental = NO;
         callRecordingSound.unstableWarning = @"Beta: persistent CallServices system-file replacement. Disclosure sounds may be legally required where you live; you are responsible for your use and apply this at your own risk. Use Restore Original Sounds before removing Cyanide if you want Cyanide's backups written back.";
+
+        Package *hideHomeBar = [[Package alloc] initWithIdentifier:@"com.darksword.hide-home-bar"
+                                           name:@"Hide Home Bar"
+                               shortDescription:@"Hide the bottom home indicator"
+                                longDescription:@"Zeros the first page of /System/Library/PrivateFrameworks/MaterialKit.framework/Assets.car using a DirtyZero-style file-backed page zero, which hides the bottom home indicator after SpringBoard reloads assets.\n\nRun Hide Home Bar by itself, then respring so SpringBoard refreshes the asset cache. To bring the home indicator back, choose Restore Home Bar and respring again. Other live SpringBoard tweaks, such as App Switcher Grid, should be applied in a separate run after the respring.\n\nCredits: C4ndyF1sh/ZeroCalories for the Home Bar target and jailbreakdotparty/dirtyZero for the page-zeroing idea. Cyanide port by zeroxjf."
+                                        version:version
+                                         author:@"C4ndyF1sh / jailbreakdotparty / zeroxjf"
+                                       category:@"Beta"
+                                     symbolName:@"line.3.horizontal"
+                                           kind:PackageInstallKindHideHomeBar
+                                     enabledKey:nil
+                                          isNew:YES];
+        hideHomeBar.unstableWarning = @"Beta: DirtyZero-style system asset page zeroing. Run by itself, then respring after hiding. To restore the home indicator, choose Restore Home Bar and respring.";
 
         Package *otaBlock = [[Package alloc] initWithIdentifier:@"com.darksword.ota-block"
                                            name:@"OTA Updates"
@@ -444,9 +474,11 @@ static const NSInteger kSecAppSwitcherGrid  = 22;
             axon,
             nanoRegistry,
             callRecordingSound,
+            hideHomeBar,
 #if CYANIDE_PRIVATE_TWEAKS_AVAILABLE
             typeBanner,
             notificationIsland,
+            ipaDecryptor,
             stageStrip,
 #endif
             locationSim,

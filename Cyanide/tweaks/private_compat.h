@@ -28,7 +28,8 @@
 #if __has_include("private/rssidisplay.h") && \
     __has_include("private/typebanner.h") && \
     __has_include("private/notificationisland.h") && \
-    __has_include("private/stagestrip.h")
+    __has_include("private/stagestrip.h") && \
+    __has_include("private/ipadecryptor.h")
 
 #define CYANIDE_PRIVATE_TWEAKS_AVAILABLE 1
 
@@ -36,6 +37,7 @@
 #import "private/typebanner.h"
 #import "private/notificationisland.h"
 #import "private/stagestrip.h"
+#import "private/ipadecryptor.h"
 
 #else
 
@@ -246,6 +248,79 @@ static inline void notificationisland_forget_remote_state(void)
 
 static inline bool notificationisland_has_remote_state(void)
 {
+    return false;
+}
+
+static inline NSArray<NSDictionary<NSString *, NSString *> *> *ipadecryptor_installed_apps(void)
+{
+    return @[];
+}
+
+static inline NSString *ipadecryptor_display_name_for_bundle(NSString *bundleID)
+{
+    return bundleID.length > 0 ? bundleID : @"None selected";
+}
+
+static inline NSString *ipadecryptor_default_output_directory(void)
+{
+    return @"";
+}
+
+static inline NSString *ipadecryptor_app_store_account_summary(void)
+{
+    return @"IPA Decryptor is unavailable in this build.";
+}
+
+static inline bool ipadecryptor_has_app_store_account(void)
+{
+    return false;
+}
+
+static inline bool ipadecryptor_login_app_store(NSString *email,
+                                                NSString *password,
+                                                NSString *authCode,
+                                                NSString **messageOut)
+{
+    (void)email;
+    (void)password;
+    (void)authCode;
+    if (messageOut) *messageOut = @"IPA Decryptor is unavailable in this build.";
+    return false;
+}
+
+static inline void ipadecryptor_clear_app_store_account(void)
+{
+}
+
+static inline NSDictionary<NSString *, NSString *> *ipadecryptor_resolve_app_store_input(NSString *input,
+                                                                                        NSString **messageOut)
+{
+    (void)input;
+    if (messageOut) *messageOut = @"IPA Decryptor is unavailable in this build.";
+    return nil;
+}
+
+static inline bool ipadecryptor_download_app_store_ipa(NSString *input,
+                                                      NSString **downloadedPathOut,
+                                                      NSString **messageOut)
+{
+    (void)input;
+    if (downloadedPathOut) *downloadedPathOut = nil;
+    if (messageOut) *messageOut = @"IPA Decryptor is unavailable in this build.";
+    return false;
+}
+
+static inline bool ipadecryptor_probe_installed_app(NSString *bundleID, NSString **messageOut)
+{
+    (void)bundleID;
+    if (messageOut) *messageOut = @"IPA Decryptor is unavailable in this build.";
+    return false;
+}
+
+static inline bool ipadecryptor_start_decrypt_installed_app(NSString *bundleID, NSString **messageOut)
+{
+    (void)bundleID;
+    if (messageOut) *messageOut = @"IPA Decryptor is unavailable in this build.";
     return false;
 }
 #endif
