@@ -67,8 +67,13 @@ notify_signal_release() {
 
         # Non-fatal: releases should still ship if the always-on Signal bot is
         # offline, off-network, or not yet configured for SSH.
-        # shellcheck disable=SC2206
-        local ssh_opts=(${SIGNAL_BOT_SSH_OPTIONS:-"-o BatchMode=yes -o ConnectTimeout=8 -o StrictHostKeyChecking=accept-new"})
+        local ssh_opts
+        if [ -n "${SIGNAL_BOT_SSH_OPTIONS:-}" ]; then
+            # shellcheck disable=SC2206
+            ssh_opts=(${SIGNAL_BOT_SSH_OPTIONS})
+        else
+            ssh_opts=(-o BatchMode=yes -o ConnectTimeout=8 -o StrictHostKeyChecking=accept-new)
+        fi
         if ssh "${ssh_opts[@]}" "$signal_ssh_host" "$remote_cmd" < "$notify_script"; then
             return 0
         fi
