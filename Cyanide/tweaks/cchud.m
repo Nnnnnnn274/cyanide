@@ -18,6 +18,13 @@ static const bool kCCHUDDebugLogging = false;
 static uint64_t gCCHControlCenterController = 0;
 static bool gCCHApplied = false;
 
+static uint64_t cch_object_class(uint64_t obj)
+{
+    if (!r_is_objc_ptr(obj)) return 0;
+    uint64_t cls = r_dlsym_call(R_TIMEOUT, "object_getClass", obj, 0, 0, 0, 0, 0, 0, 0);
+    return cls;
+}
+
 static uint64_t cch_control_center_controller(void)
 {
     if (gCCHControlCenterController) return gCCHControlCenterController;
@@ -51,8 +58,8 @@ bool cchud_apply_in_session(void)
         log_user("[CCH] Control Center HUD tweak is not available on this iOS build.\n");
         return false;
     }
-    
-    uint64_t cls = ds_object_class(ctrl);
+
+    uint64_t cls = cch_object_class(ctrl);
     if (!r_is_objc_ptr(cls)) {
         printf("[CCH] could not get controller class\n");
         return false;
