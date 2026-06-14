@@ -6397,6 +6397,7 @@ typedef NS_ENUM(NSInteger, SettingsSection) {
     SectionLocationSim,
     SectionGravityLite,
     SectionAppSwitcherGrid,
+    SectionCCHUD,
     SectionIPADecryptor,
     SectionFastLockXLite,
     SectionCount,
@@ -7515,6 +7516,21 @@ static _CyanideMailDelegate *_cyanide_mail_delegate(void) {
     ];
 }
 
+- (NSArray<NSDictionary *> *)cchudRows
+{
+    BOOL applied = settings_tweak_is_applied(kSettingsCCHUDEnabled);
+    return @[
+        @{ @"kind": @"info",
+           @"title": applied ? @"Status: Enabled" : @"Status: Disabled",
+           @"subtitle": @"Control Center HUD customization. This is a runtime SpringBoard patch that does not write system files; respring restores stock behavior." },
+        @{ @"kind": @"button",
+           @"title": @"Disable Control Center HUD",
+           @"subtitle": @"Disables the Control Center HUD customization in the active SpringBoard session.",
+           @"action": @"cchud-disable",
+           @"destructive": @YES },
+    ];
+}
+
 - (NSArray<NSDictionary *> *)fastLockXLiteRows
 {
     return @[
@@ -7590,6 +7606,9 @@ static _CyanideMailDelegate *_cyanide_mail_delegate(void) {
     } else if (section == SectionAppSwitcherGrid) {
         [out addObject:@{@"title": @"Switcher style",
                          @"value": settings_tweak_is_applied(kSettingsAppSwitcherGridEnabled) ? @"Grid" : @"Stock"}];
+    } else if (section == SectionCCHUD) {
+        [out addObject:@{@"title": @"Status",
+                         @"value": settings_tweak_is_applied(kSettingsCCHUDEnabled) ? @"Enabled" : @"Disabled"}];
     } else if (section == SectionFastLockXLite) {
         BOOL alwaysOnIntent = [d boolForKey:kSettingsFastLockXLiteEnabled];
         BOOL alwaysOnApplied = settings_tweak_is_applied(kSettingsFastLockXLiteEnabled);
@@ -7652,6 +7671,7 @@ static _CyanideMailDelegate *_cyanide_mail_delegate(void) {
         case SectionTypeBanner: return self.typebannerRows;
         case SectionNotificationIsland: return self.notificationIslandRows;
         case SectionAppSwitcherGrid: return self.appSwitcherGridRows;
+        case SectionCCHUD: return self.cchudRows;
         case SectionFastLockXLite: return settings_fastlockx_lite_install_allowed() ? self.fastLockXLiteRows : @[];
         case SectionGravityLite: return self.gravityLiteRows;
         case SectionLocationSim: return self.locationSimRows;
@@ -7688,6 +7708,7 @@ static _CyanideMailDelegate *_cyanide_mail_delegate(void) {
 #endif
         @{ @"title": @"Gravity Lite",       @"icon": @"arrow.down.circle.fill",              @"color": [UIColor systemGreenColor],  @"section": @(SectionGravityLite) },
         @{ @"title": @"App Switcher Grid",  @"icon": @"square.grid.2x2.fill",                @"color": [UIColor systemOrangeColor], @"section": @(SectionAppSwitcherGrid) },
+        @{ @"title": @"Control Center HUD", @"icon": @"rectangle.3.group.fill",              @"color": [UIColor systemBlueColor],   @"section": @(SectionCCHUD) },
         @{ @"title": @"Location Simulator", @"icon": @"location.fill",                       @"color": [UIColor systemGreenColor],  @"section": @(SectionLocationSim) },
         @{ @"title": @"SnowBoard Lite",     @"icon": @"square.stack.3d.up.fill",             @"color": [UIColor systemCyanColor],   @"section": @(SectionSnowBoardLite) },
         @{ @"title": @"LiveWP",             @"icon": @"play.rectangle.fill",                 @"color": [UIColor systemPurpleColor], @"section": @(SectionLiveWP) },
@@ -7898,6 +7919,9 @@ static _CyanideMailDelegate *_cyanide_mail_delegate(void) {
     }
     if (s == SectionAppSwitcherGrid) {
         return @"Runtime patch. It changes SpringBoard's app switcher style in memory, writes no system files, and a respring restores stock. Unsupported builds may glitch the app switcher or crash SpringBoard.";
+    }
+    if (s == SectionCCHUD) {
+        return @"Runtime patch. It customizes the Control Center HUD in memory, writes no system files, and a respring restores stock behavior.";
     }
     if (s == SectionGravityLite) {
         return @"RemoteCall-only core port of Julio Verne's Gravity. Run applies UIDynamicAnimator gravity, collision, bounce, friction, optional dock physics, and accelerometer steering to SpringBoard icon snapshots. It can restore the icon layout or fire a manual explosion pulse while the SpringBoard session is active.\n\nNot included in this core port: Activator/Home-button hooks, drag gestures, automatic shake effects, and preference-daemon notifications.";
@@ -12052,6 +12076,38 @@ void cyanide_present_contact(UIViewController *host)
                 }
                 dispatch_async(dispatch_get_main_queue(), ^{
                     [self reloadSectionOrAll:SectionAppSwitcherGrid];
+                });
+            });
+        }
+        return;
+    }
+
+    if (indexPath.section == SectionCCHUD) {
+        NSDictionary *row = [self rowsForSection:indexPath.section][indexPath.row];
+        if (![row[@"kind"] isEqualToString:@"button"]) return;
+        NSString *action = row[@"action"];
+        if ([action isEqualToString:@"cchud-disable"]) {
+            NSUserDefaults *d = [NSUserDefaults standardUserDefaults];
+            [d setBool:NO forKey:kSettingsCCHUDEnabled];
+            [d synchronize];
+            settings_mark_tweak_applied(kSettingsCCHUDEnabled, NO);
+            settings_notify_package_queue_changed_async();
+            if (!g_springboard_rc_ready) {
+                cchud_forget_remote_state();
+                log_user("[CCH] Control Center HUD disabled. No active SpringBoard session was available; respring restores stock if needed.\n");
+                [self reloadSectionOrAll:SectionCCHUD];
+                return;
+            }
+            dispatch_async(dispatch_get_global_queue(0, 0), ^{
+                @synchronized (settings_rc_lock()) {
+                    if (settings_cleanup_in_progress() || !g_springboard_rc_ready) return;
+                    bool ok = cchud_stop_in_session();
+                    log_user("%s Control Center HUD disable %s.\n",
+                             ok ? "[OK]" : "[WARN]",
+                             ok ? "completed" : "did not find an active patch; respring restores stock");
+                }
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    [self reloadSectionOrAll:SectionCCHUD];
                 });
             });
         }
